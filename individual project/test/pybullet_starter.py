@@ -12,7 +12,9 @@ print("开始执行带动态路径规划的取放任务...")
 # --- 步骤 1-7: 抓取流程 (保持不变) ---
 print("1. 移动到Home位置")
 util.move_to_joints(robotId, util.ROBOT_HOME_CONFIG)
-_, home_orientation, *_ = p.getLinkState(robotId, util.ROBOT_END_EFFECTOR_LINK_ID, computeForwardKinematics=True)
+# 【修改】获取并存储完整的Home姿态 (位置 + 方向)
+home_pos, home_orientation, *_ = p.getLinkState(robotId, util.ROBOT_END_EFFECTOR_LINK_ID, computeForwardKinematics=True)
+print(f"   - Home姿态已存储: pos={home_pos}, orn={home_orientation}")
 print("2. 张开夹爪")
 util.gripper_open(robotId)
 pos_cube_above = [0.5, -0.3, 0.25]
@@ -52,10 +54,14 @@ else:
     print("12. 抬起手臂")
     util.move_to_pose(robotId, pos_above_tray, home_orientation)
     
-    print("13. 回到Home位置")
-    util.move_to_joints(robotId, util.ROBOT_HOME_CONFIG)
-    
-    print("任务完成！")
+    print("13. 规划并执行回到Home位置的路径...")
+# 【修改】使用 plan_and_execute_motion 来安全地回家
+success_go_home = util.plan_and_execute_motion(robotId, home_pos, home_orientation, dummyId)
+
+if not success_go_home:
+    print("!!! 警告: 回家路径规划失败，停在原地。")
+
+print("任务完成！")
 
 # --- 3. 保持仿真 ---
 try:
