@@ -20,14 +20,20 @@ util.gripper_open(robotId)
 pos_cube_above = [0.5, -0.3, 0.25]
 pos_cube_pre_grasp = [0.5, -0.3, 0.2]
 pos_at_cube = [0.5, -0.3, 0.13]
-print("4. 移动到预抓取位置")
-util.move_to_pose(robotId, pos_cube_pre_grasp, home_orientation)
-print("5. 下降到抓取位置")
-util.move_to_pose(robotId, pos_at_cube, home_orientation)
+# 旧代码: util.move_to_pose(robotId, pos_cube_pre_grasp, home_orientation)
+# 新代码:
+print("4. 移动到预抓取位置 (安全)")
+util.plan_and_execute_motion(robotId, pos_cube_pre_grasp, home_orientation, dummyId)
+# 旧代码: util.move_to_pose(robotId, pos_at_cube, home_orientation)
+# 新代码:
+print("5. 下降到抓取位置 (安全)")
+util.plan_and_execute_motion(robotId, pos_at_cube, home_orientation, dummyId)
 print("6. 闭合夹爪 (抓取)")
 util.gripper_close(robotId)
-print("7. 抬起方块至预备高度")
-util.move_to_pose(robotId, pos_cube_above, home_orientation)
+# 旧代码: util.move_to_pose(robotId, pos_cube_above, home_orientation)
+# 新代码:
+print("7. 抬起方块至预备高度 (安全)")
+util.plan_and_execute_motion(robotId, pos_cube_above, home_orientation, dummyId)
 
 # --- 【重要改动】调用动态路径规划器来执行避障 ---
 # 步骤 8: 规划并执行到托盘上方的路径
@@ -45,18 +51,32 @@ else:
     print("9. 路径规划成功，继续执行放置流程。")
     pos_at_tray = [0.5, 0.5, 0.15]
     
-    print("10. 下降到放置位置")
-    util.move_to_pose(robotId, pos_at_tray, home_orientation)
+    # 旧代码: util.move_to_pose(robotId, pos_at_tray, home_orientation)
+# 新代码:
+    print("10. 下降到放置位置 (安全)")
+    util.plan_and_execute_motion(robotId, pos_at_tray, home_orientation, dummyId)
     
     print("11. 张开夹爪 (放置)")
     util.gripper_open(robotId)
     
-    print("12. 抬起手臂")
-    util.move_to_pose(robotId, pos_above_tray, home_orientation)
+    # 旧代码: util.move_to_pose(robotId, pos_above_tray, home_orientation)
+# 新代码:
+    print("12. 抬起手臂 (安全)")
+    util.plan_and_execute_motion(robotId, pos_above_tray, home_orientation, dummyId)
     
     print("13. 规划并执行回到Home位置的路径...")
-# 【修改】使用 plan_and_execute_motion 来安全地回家
-success_go_home = util.plan_and_execute_motion(robotId, home_pos, home_orientation, dummyId)
+
+# --- 新增：设置一个安全中间点 (略高于障碍物顶部)
+safe_mid_pos = [0.4, 0.3, 0.6]  # 可视化后再微调Z高度
+util.plan_and_execute_motion(robotId, safe_mid_pos, home_orientation, dummyId)
+
+# --- 再安全地回Home
+success_go_home = util.plan_and_execute_motion(robotId, 
+                                                home_pos, 
+                                                home_orientation, 
+                                                dummyId, 
+                                                target_joints_override=util.ROBOT_HOME_CONFIG)
+
 
 if not success_go_home:
     print("!!! 警告: 回家路径规划失败，停在原地。")

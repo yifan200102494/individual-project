@@ -32,9 +32,21 @@ def setup_environment():
                                  basePosition=dummy_pos)
     print("已加载静态干扰障碍物。")
 
-    home_joint_positions = [0.0, -0.785, 0.0, -2.356, 0.0, 1.57, 0.785, 0.04, 0.04]
-    for i in range(len(home_joint_positions)):
-        p.resetJointState(robotId, i, home_joint_positions[i])
+    # 【修正】这个列表必须包含所有可动关节 (7个手臂 + 2个夹爪)
+    # 关节 7 和 8 是固定(FIXED)的，不需要设置
+    home_joint_config_arm = [0.0, -0.785, 0.0, -2.356, 0.0, 1.57, 0.785]
+    home_joint_config_gripper = [0.04, 0.04] # 启动时就打开
+    
+    home_joint_positions = home_joint_config_arm + home_joint_config_gripper
+    
+    joint_indices_arm = [i for i in range(7)]
+    joint_indices_gripper = [9, 10] # 夹爪是关节 9 和 10
+    
+    for i, joint_idx in enumerate(joint_indices_arm):
+        p.resetJointState(robotId, joint_idx, home_joint_positions[i])
+        
+    for i, joint_idx in enumerate(joint_indices_gripper):
+        p.resetJointState(robotId, joint_idx, home_joint_positions[i + len(joint_indices_arm)])
     
     print("环境设置完毕。")
     # 函数现在返回四个ID
