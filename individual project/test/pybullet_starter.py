@@ -1,4 +1,4 @@
-# pybullet_starter.py (已修复: 添加反应式重试循环)
+# pybullet_starter.py (最终版，修复了重试循环)
 
 import pybullet as p
 import time
@@ -34,12 +34,19 @@ def attempt_motion_until_success(step_name, motion_func, *args, **kwargs):
     如果在循环中，它会调用 simulate 来让干扰臂移动。
     """
     print(f"--- {step_name} ---")
-    # 从 kwargs 中提取 'interferer_args'，以便在失败时调用 simulate
-    # 注意：我们假设 'interferer_args' 被作为 **kwargs 传递进来
-    sim_kwargs = kwargs 
+    
+    # 【修复】从 kwargs 中 *只* 提取 'simulate' 函数认识的参数
+    # 而不是盲目地复制所有 kwargs (这导致了 'target_joints_override' 错误)
+    sim_kwargs = {
+        "interferer_id": kwargs.get("interferer_id"),
+        "interferer_joints": kwargs.get("interferer_joints"),
+        "interferer_update_rate": kwargs.get("interferer_update_rate", 120)
+    }
     
     while True:
         # 尝试执行运动规划
+        # motion_func (例如 plan_and_execute_motion) 仍然会接收到
+        # *所有* kwargs，包括 'target_joints_override'，这是正确的。
         success = motion_func(*args, **kwargs)
         
         if success:
@@ -47,11 +54,11 @@ def attempt_motion_until_success(step_name, motion_func, *args, **kwargs):
             return True # 成功，退出循环
         
         # 如果失败...
-        print(f"  [!!] {step_name} 路径规划失败 (可能被阻挡)。等待 1 秒后重试...")
+        print(f"  [!!] {step_name} 路径规划失败 (可能被阻挡)。等待 0.3 秒后重试...")
         
         # 【关键】调用 simulate 等待，并让干扰臂移动
-        # 我们传递从 kwargs 中提取的 sim_kwargs
-        util.simulate(seconds=1.0, slow_down=True, **sim_kwargs)
+        # 【修复】这里现在传递的是 *清理过* 的 sim_kwargs
+        util.simulate(seconds=0.3, slow_down=True, **sim_kwargs)
         
 
 # =============================================================
