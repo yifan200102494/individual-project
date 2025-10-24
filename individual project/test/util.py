@@ -1,4 +1,4 @@
-# util.py (最终完整版 - 已修复IK约束)
+# util.py (最终完整版 - 已修复IK约束 和 性能优化)
 
 import pybullet as p
 import time
@@ -55,7 +55,7 @@ def is_state_colliding(robot_id, joint_pos, obstacle_ids, gripper_pos): #
 
 
 def is_path_colliding(robot_id, start_joints, end_joints, obstacle_ids,
-                      start_gripper_pos, end_gripper_pos, num_steps=50): #
+                      start_gripper_pos, end_gripper_pos, num_steps=25): #
     """
     检查一条路径（一系列插值点）是否碰撞。
     【新增】在此处（循环外）关闭/打开渲染，以防止闪烁。
@@ -106,7 +106,7 @@ def calc_anisotropic_repulsive_force(current_pos, obs_center, obs_aabb_min, obs_
     return magnitude * grad_rho_scaled #
 
 def plan_path_with_pfm(start_pos, goal_pos, obstacle_ids,
-                       step_size=0.05, max_steps=3000, goal_threshold=0.05): #
+                       step_size=0.05, max_steps=300, goal_threshold=0.05): #
     # (此函数代码保持不变)
     print("  >> PFM: 启动势场法路径规划器...") #
     obstacles_info = [] #
@@ -270,6 +270,9 @@ def plan_and_execute_motion(robot_id, goal_pos, goal_orn, obstacle_ids, target_j
     ik_params = default_null_space_params.copy() #
     for i, wp_pos in enumerate(workspace_path): #
         try: #
+            if i % 3 != 0 and i != (len(workspace_path) - 1): # (但最后一个点必须检查)
+                continue
+
             ik_params["restPoses"] = list(last_joint_pos)  #
             wp_joints = p.calculateInverseKinematics( #
                 robot_id, ROBOT_END_EFFECTOR_LINK_ID, wp_pos, goal_orn, **ik_params
@@ -341,7 +344,10 @@ def simulate(steps=None, seconds=None, slow_down=True,
             break #
 
 
-# 【重大修改】添加了实时反应式避障
+# ==========================================================
+# --- 【!! 性能优化 !!】 ---
+# 此函数已被替换为优化后的版本
+# ==========================================================
 def move_to_joints(robot_id, target_joint_pos, max_velocity=1, timeout=5, **kwargs): #
     """
     移动到目标关节位置。
@@ -352,7 +358,6 @@ def move_to_joints(robot_id, target_joint_pos, max_velocity=1, timeout=5, **kwar
     """
     
     # --- 1. 提取参数 ---
-    # 【修复】从 kwargs 中提取 simulate 函数专用的参数
     sim_kwargs = { #
         "interferer_id": kwargs.get("interferer_id"), #
         "interferer_joints": kwargs.get("interferer_joints"), #
@@ -360,11 +365,25 @@ def move_to_joints(robot_id, target_joint_pos, max_velocity=1, timeout=5, **kwar
         "slow_down": kwargs.get("slow_down", True)  #
     }
     
-    # --- 【新增】本地反应式避障参数 ---
+    # --- 本地反应式避障参数 ---
     interferer_id = kwargs.get("interferer_id") #
-    REACTIVE_DISTANCE_THRESHOLD = 0.07 # “警告区”距离 (米) #
+    REACTIVE_DISTANCE_THRESHOLD = 0.06 # “警告区”距离 (米) #
     REACTIVE_NUDGE_STRENGTH = 0.1 # “推开”的力度 (米) #
-    # --- 新增结束 ---
+
+    # ==========================================================
+    # --- 【!! 性能优化 !!】 ---
+    # 定义反应式IK的更新频率 (每N步更新一次)
+    # 240Hz / 10 = 24Hz。这足以应对实时避障，同时极大降低CPU负载。
+    REACTIVE_IK_UPDATE_RATE_STEPS = 10 
+    
+    # _last_reactive_ik_step 用于跟踪上次IK计算的时间
+    _last_reactive_ik_step = -REACTIVE_IK_UPDATE_RATE_STEPS - 1 
+    
+    # _current_effective_target 用于“暂存”计算出的目标
+    # 在非IK计算的步骤中，机器人继续朝这个暂存的目标移动
+    _current_effective_target = np.asarray(target_joint_pos).copy()
+    # --- 优化结束 ---
+    # ==========================================================
 
     target_joint_pos = np.asarray(target_joint_pos) #
     num_arm_joints = len(target_joint_pos) #
@@ -391,67 +410,76 @@ def move_to_joints(robot_id, target_joint_pos, max_velocity=1, timeout=5, **kwar
                 return False # 报告失败 #
         # --- 硬碰撞检测结束 ---
 
-        # --- 3. 【新增】反应式避障 (Warning Zone) ---
-        effective_target_joints = target_joint_pos  #
+        # --- 3. 【优化】反应式避障 (Warning Zone) ---
         is_in_warning_zone = False #
 
         if interferer_id is not None: #
-            # 【修复】使用 robot_id
             closest_points = p.getClosestPoints(robot_id, interferer_id, REACTIVE_DISTANCE_THRESHOLD) #
             
             if closest_points: #
                 is_in_warning_zone = True #
                 
-                repulsive_vec = np.zeros(3) #
-                num_points = 0 #
-                for point in closest_points: #
-                    repulsive_vec += np.asarray(point[7]) #
-                    num_points += 1 #
-                
-                if num_points > 0: #
-                    repulsive_vec /= num_points #
+                # 【优化】检查是否到了该更新IK的时间
+                current_step = _GLOBAL_SIM_STEP_COUNTER #
+                if (current_step - _last_reactive_ik_step) >= REACTIVE_IK_UPDATE_RATE_STEPS: #
+                    _last_reactive_ik_step = current_step # 重置计时器
                     
-                    # 【修复】使用 robot_id
-                    ee_state = p.getLinkState(robot_id, ROBOT_END_EFFECTOR_LINK_ID, computeForwardKinematics=True) #
-                    current_ee_pos = np.asarray(ee_state[0]) #
-                    current_ee_orn = np.asarray(ee_state[1]) #
+                    # --- 只有在需要时才执行以下昂贵计算 ---
+                    repulsive_vec = np.zeros(3) #
+                    num_points = 0 #
+                    for point in closest_points: #
+                        repulsive_vec += np.asarray(point[7]) #
+                        num_points += 1 #
                     
-                    nudged_ee_pos = current_ee_pos + repulsive_vec * REACTIVE_NUDGE_STRENGTH #
-                    
-                    try: #
-                        # --- 【关键修复】---
-                        # 【新增】为 IK 求解器准备约束
-                        # 使用 *当前姿态* 作为 restPose，以最小化“跳变”
-                        current_joint_pos_for_ik = [p.getJointState(robot_id, i)[0] for i in range(num_arm_joints)]
-                        ik_params = _DEFAULT_NULL_SPACE_PARAMS.copy()
-                        ik_params["restPoses"] = list(current_joint_pos_for_ik)
-
-                        # 【修改】为 IK 求解器添加约束 (**)
-                        # 【修复】使用 robot_id
-                        nudged_joint_pos = p.calculateInverseKinematics( #
-                            robot_id, ROBOT_END_EFFECTOR_LINK_ID, 
-                            nudged_ee_pos, current_ee_orn,
-                            **ik_params # <-- 添加约束，防止诡异的形状
-                        )[:num_arm_joints]
-                        # --- 修复结束 ---
+                    if num_points > 0: #
+                        repulsive_vec /= num_points #
                         
-                        effective_target_joints = np.asarray(nudged_joint_pos) #
-                    except Exception: #
-                        pass  #
+                        ee_state = p.getLinkState(robot_id, ROBOT_END_EFFECTOR_LINK_ID, computeForwardKinematics=True) #
+                        current_ee_pos = np.asarray(ee_state[0]) #
+                        current_ee_orn = np.asarray(ee_state[1]) #
+                        
+                        nudged_ee_pos = current_ee_pos + repulsive_vec * REACTIVE_NUDGE_STRENGTH #
+                        
+                        try: #
+                            current_joint_pos_for_ik = [p.getJointState(robot_id, i)[0] for i in range(num_arm_joints)]
+                            ik_params = _DEFAULT_NULL_SPACE_PARAMS.copy()
+                            ik_params["restPoses"] = list(current_joint_pos_for_ik)
+
+                            nudged_joint_pos = p.calculateInverseKinematics( #
+                                robot_id, ROBOT_END_EFFECTOR_LINK_ID, 
+                                nudged_ee_pos, current_ee_orn,
+                                **ik_params 
+                            )[:num_arm_joints]
+                            
+                            # 【优化】更新暂存的目标
+                            _current_effective_target = np.asarray(nudged_joint_pos) #
+                        except Exception: #
+                            # 如果IK失败，暂时恢复原始目标
+                             _current_effective_target = target_joint_pos #
+                
+                # --- 如果还没到更新时间，代码会跳过昂贵的IK，
+                # --- 机械臂会继续朝上一次计算出的 _current_effective_target 移动
+
+            else:
+                # 【优化】如果离开了警告区，立刻重置回原始目标
+                is_in_warning_zone = False #
+                _current_effective_target = target_joint_pos #
                                 
         # --- 反应式避障结束 ---
 
         # --- 4. 【修改】在循环中持续设置电机目标 ---
+        # 【优化】始终使用 _current_effective_target 作为目标
         for joint_id in range(num_arm_joints): #
             p.setJointMotorControl2( #
                 robot_id, joint_id, controlMode=p.POSITION_CONTROL,
-                targetPosition=effective_target_joints[joint_id],
+                targetPosition=_current_effective_target[joint_id], # <-- 使用暂存的目标
                 maxVelocity=max_velocity, force=100
             )
 
         # --- 5. 检查是否到达 *原始* 目标 ---
         current_joint_pos = np.asarray([p.getJointState(robot_id, i)[0] for i in range(num_arm_joints)]) #
         
+        # 只有在 *不在警告区* 且 *到达原始目标* 时，才算成功
         if np.allclose(current_joint_pos, target_joint_pos, atol=0.01): #
             if not is_in_warning_zone:  #
                 return True # 报告成功 #
@@ -465,6 +493,7 @@ def move_to_joints(robot_id, target_joint_pos, max_velocity=1, timeout=5, **kwar
             return False # 超时也算失败 #
             
     return True 
+# --- 优化函数结束 ---
 
 
 def gripper_open(robot_id, **kwargs): #
