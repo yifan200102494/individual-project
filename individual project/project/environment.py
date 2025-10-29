@@ -24,7 +24,7 @@ def setup_environment():
 
     # --- 【重大修改】加载一个 *动态* 的 Kuka 手臂作为“干扰者” ---
     # 将它放置在方块和托盘之间的路径上
-    interferer_pos = [0.5, 0.1, 0.0] # 放置在地面上
+    interferer_pos = [0.6, 0.1, 0.0] # 放置在地面上
     # 旋转它，让它朝向工作区域
     interferer_orn = p.getQuaternionFromEuler([0, 0, np.pi/2]) 
     
