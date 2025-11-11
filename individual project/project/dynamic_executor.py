@@ -393,7 +393,7 @@ class DynamicMotionExecutor:
                     # 🔥 检查是否需要触发随机探索
                     if failed_execution_counter >= 3:  # 连续失败3次后触发探索（降低阈值，更快响应）
                         print(f"\n  [🔍 触发随机探索] 已连续失败 {failed_execution_counter} 次")
-                        if self._trigger_exploration(obstacle_ids, ignore_set, sim_kwargs, debug):
+                        if self._trigger_exploration(obstacle_ids, sim_kwargs, debug):
                             failed_execution_counter = 0  # 探索成功，重置计数
                             print(f"  [✅ 探索成功] 继续尝试到达目标")
                         else:
@@ -420,7 +420,7 @@ class DynamicMotionExecutor:
                     # 🔥 检查是否需要触发随机探索
                     if failed_execution_counter >= 5:
                         print(f"\n  [🔍 触发随机探索] 已连续失败 {failed_execution_counter} 次")
-                        if self._trigger_exploration(obstacle_ids, ignore_set, sim_kwargs, debug):
+                        if self._trigger_exploration(obstacle_ids, sim_kwargs, debug):
                             failed_execution_counter = 0
                             print(f"  [✅ 探索成功] 继续尝试到达目标")
                         else:
@@ -478,7 +478,7 @@ class DynamicMotionExecutor:
                 # 🔥 检查是否需要触发随机探索
                 if failed_execution_counter >= 5:
                     print(f"\n  [🔍 触发随机探索] 已连续失败 {failed_execution_counter} 次")
-                    if self._trigger_exploration(obstacle_ids, ignore_set, sim_kwargs, debug):
+                    if self._trigger_exploration(obstacle_ids, sim_kwargs, debug):
                         failed_execution_counter = 0
                         print(f"  [✅ 探索成功] 继续尝试到达目标")
                     else:
@@ -767,7 +767,7 @@ class DynamicMotionExecutor:
         except:
             return False
     
-    def _trigger_exploration(self, obstacle_ids, ignore_ids, sim_kwargs, debug=False):
+    def _trigger_exploration(self, obstacle_ids, sim_kwargs, debug=False):
         """
         🔥 触发随机探索（优先抬高机械臂）
         
@@ -776,7 +776,6 @@ class DynamicMotionExecutor:
         
         Args:
             obstacle_ids: 障碍物ID列表
-            ignore_ids: 要忽略的物体ID列表（如被抓取的物品）
             sim_kwargs: 仿真参数
             debug: 调试模式
         
@@ -791,11 +790,9 @@ class DynamicMotionExecutor:
         print(f"{'='*60}\n")
         
         # 调用探索模块（会优先尝试抬高机械臂）
-        # 🔥 关键修复：传入 ignore_ids，让探索模块排除被抓取的物品
         success = perform_random_exploration(
             self.robot_id, 
             obstacle_ids,
-            ignore_ids=ignore_ids,  # 传递 ignore_ids
             **sim_kwargs
         )
         

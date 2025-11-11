@@ -5,11 +5,12 @@
 模块结构：
 - constants.py: 常量定义
 - collision_detection.py: 碰撞检测
-- perception.py: 传感器感知
 - path_planning.py: 路径规划（PFM、弧形路径等）
 - exploration.py: 随机探索
 - motion_control.py: 运动控制（仿真、关节运动、夹爪）
-- planner.py: 高层规划器
+- depth_perception.py: 深度感知（Extrinsic Calibration + Depth Sensing of Occupancy）
+- incremental_planner.py: 增量式规划器
+- dynamic_executor.py: 动态执行器（主要入口）
 """
 
 # ============================================================
@@ -35,11 +36,10 @@ from collision_detection import (
 )
 
 # ============================================================
-# 导入感知功能
+# 传统感知功能已移除，请使用 AdaptivePerceptionSystem
 # ============================================================
-from perception import (
-    perceive_obstacles_with_rays
-)
+# 保留变量以向后兼容
+perceive_obstacles_with_rays = None
 
 # ============================================================
 # 导入路径规划功能
@@ -82,22 +82,17 @@ from motion_control import (
 )
 
 # ============================================================
-# 导入高层规划器
+# 传统规划器已移除，请使用 DynamicMotionExecutor
 # ============================================================
-from planner import (
-    plan_and_execute_motion
-)
+# 保留变量以向后兼容
+plan_and_execute_motion = None
 
 # ============================================================
-# 导入实时动态系统（新）
+# 导入实时动态系统（主要功能）
 # ============================================================
-try:
-    from dynamic_executor import DynamicMotionExecutor
-    from realtime_perception import AdaptivePerceptionSystem
-    from incremental_planner import IncrementalPlanner, ReactivePlanner
-    _DYNAMIC_SYSTEM_AVAILABLE = True
-except ImportError:
-    _DYNAMIC_SYSTEM_AVAILABLE = False
+from dynamic_executor import DynamicMotionExecutor
+from depth_perception import DepthPerceptionSystem, DepthCamera, OccupancyDetector
+from incremental_planner import IncrementalPlanner, ReactivePlanner
 
 # ============================================================
 # 向后兼容：保留原有的私有变量名
@@ -123,9 +118,6 @@ __all__ = [
     # 碰撞检测
     'is_state_colliding',
     'is_path_colliding',
-    
-    # 感知
-    'perceive_obstacles_with_rays',
     
     # 路径规划
     'calc_attractive_force',
@@ -155,18 +147,19 @@ __all__ = [
     'gripper_open',
     'gripper_close',
     
-    # 高层规划
-    'plan_and_execute_motion',
-    
-    # 实时动态系统（新）
+    # 实时动态系统（推荐使用）
     'DynamicMotionExecutor',
-    'AdaptivePerceptionSystem',
     'IncrementalPlanner',
     'ReactivePlanner',
+    
+    # 深度感知系统（基于Extrinsic Calibration和Depth Sensing of Occupancy）
+    'DepthPerceptionSystem',
+    'DepthCamera',
+    'OccupancyDetector',
 ]
 
 # ============================================================
 # 版本信息
 # ============================================================
-__version__ = '2.0.0'
-__author__ = 'Refactored Modular Version'
+__version__ = '2.1.0'
+__author__ = 'Real-time Dynamic System'

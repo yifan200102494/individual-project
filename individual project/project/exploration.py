@@ -10,7 +10,7 @@ from constants import DEFAULT_NULL_SPACE_PARAMS, ROBOT_END_EFFECTOR_LINK_ID, WOR
 from collision_detection import is_path_colliding, is_state_colliding
 
 
-def perform_random_exploration(robot_id, obstacle_ids, ignore_ids=None, **kwargs):
+def perform_random_exploration(robot_id, obstacle_ids, **kwargs):
     """
     执行大范围、长距离的随机探索移动（优化版：减少候选点，提高速度）
     
@@ -20,27 +20,11 @@ def perform_random_exploration(robot_id, obstacle_ids, ignore_ids=None, **kwargs
     Args:
         robot_id: 机器人ID
         obstacle_ids: 障碍物ID列表
-        ignore_ids: 要忽略的物体ID列表（如被抓取的物品）
         **kwargs: 其他参数
     
     Returns:
         bool: 是否成功执行了随机移动
     """
-    # 🔥 关键修复：从 obstacle_ids 中排除 ignore_ids（被抓取的物品等）
-    if ignore_ids is None:
-        ignore_ids = []
-    
-    # 创建一个集合用于快速查找
-    ignore_set = set(ignore_ids) if not isinstance(ignore_ids, set) else ignore_ids
-    
-    # 过滤障碍物列表，排除被抓取的物品
-    filtered_obstacle_ids = [obs_id for obs_id in obstacle_ids if obs_id not in ignore_set]
-    
-    if len(filtered_obstacle_ids) < len(obstacle_ids):
-        print(f"  >> [探索模块] 排除了 {len(obstacle_ids) - len(filtered_obstacle_ids)} 个被抓取的物品")
-    
-    # 使用过滤后的障碍物列表
-    obstacle_ids = filtered_obstacle_ids
     print("\n" + "="*60)
     print("  🔍 开始大范围3D随机探索（包含XYZ三轴）...")
     print("="*60)
