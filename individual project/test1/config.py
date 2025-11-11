@@ -69,7 +69,7 @@ GRIPPER_FORCE = 20              # 夹爪力量
 GRIPPER_MAX_VELOCITY = 0.1      # 夹爪最大速度
 
 # ========== 障碍臂运动参数 ==========
-OBSTACLE_UPDATE_INTERVAL = 120  # 障碍臂每120步更新一次目标
-OBSTACLE_MOVE_STEP_RATIO = 0.02 # 每步移动2%的差距
+OBSTACLE_UPDATE_INTERVAL = 120  # 障碍臂每120步更新一次*目标*
+OBSTACLE_MOVE_INTERVAL = 20      # <-- 【新增】障碍臂每N个仿真步才*移动*一次 (1=每步都移)
+OBSTACLE_MOVE_STEP_RATIO = 0.02 # 每次移动时，移动2%的差距
 OBSTACLE_JOINT_FORCE = 50       # 障碍臂关节控制力
-

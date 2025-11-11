@@ -5,7 +5,10 @@
 
 import pybullet as p
 import numpy as np
-from config import OBSTACLE_UPDATE_INTERVAL, OBSTACLE_MOVE_STEP_RATIO, OBSTACLE_JOINT_FORCE
+from config import (
+    OBSTACLE_UPDATE_INTERVAL, OBSTACLE_MOVE_STEP_RATIO, 
+    OBSTACLE_JOINT_FORCE, OBSTACLE_MOVE_INTERVAL  # <-- 【修改1】: 导入新的配置
+)
 
 
 class ObstacleArmController:
@@ -43,8 +46,10 @@ class ObstacleArmController:
             self.target_joint_angles.append(joint_state[0])
         
         # 运动参数
-        self.update_counter = 0
+        self.update_counter = 0  # 目标更新计数器
         self.update_interval = OBSTACLE_UPDATE_INTERVAL
+        
+        self.move_counter = 0    # <-- 【修改2】: 添加新的移动计数器
     
     def is_in_forbidden_zone(self):
         """
@@ -113,41 +118,22 @@ class ObstacleArmController:
             self.target_joint_angles = self.generate_random_target()
             
             # --- 旧逻辑（已注释掉）---
-            # # 保存当前状态
-            # saved_states = []
-            # for idx in self.joint_indices:
-            #     joint_state = p.getJointState(self.obstacle_arm_id, idx)
-            #     saved_states.append(joint_state[0])
-            
-            # # 尝试生成新目标
-            # max_attempts = 10
-            # found_valid_target = False
-            
-            # for attempt in range(max_attempts):
-            #     # 生成随机目标
-            #     test_targets = self.generate_random_target()
-                
-            #     # 临时设置到目标位置进行测试
-            #     for i, idx in enumerate(self.joint_indices):
-            #         p.resetJointState(self.obstacle_arm_id, idx, test_targets[i])
-                
-            #     # 检查是否在禁区
-            #     if not self.is_in_forbidden_zone():
-            #         self.target_joint_angles = test_targets
-            #         found_valid_target = True
-            #         # 恢复当前状态，然后平滑移动过去
-            #         for i, idx in enumerate(self.joint_indices):
-            #             p.resetJointState(self.obstacle_arm_id, idx, saved_states[i])
-            #         break
-            #     else:
-            #         # 恢复状态，继续尝试
-            #         for i, idx in enumerate(self.joint_indices):
-            #             p.resetJointState(self.obstacle_arm_id, idx, saved_states[i])
-            
-            # if not found_valid_target:
-            #     # 如果找不到有效目标，保持当前目标
-            #     self.target_joint_angles = saved_states
+            # (旧逻辑保持注释状态)
+            # ...
             # --- 结束旧逻辑 ---
+        
+
+        # --- 【修改3】: 添加移动频率控制 ---
+        self.move_counter += 1
+        
+        # 只有当计数器达到间隔时才执行移动
+        if self.move_counter < OBSTACLE_MOVE_INTERVAL:
+            return  # 还没到移动的时机，跳过本轮更新
+        
+        # 重置计数器，准备下一次移动
+        self.move_counter = 0
+        # ------------------------------------
+
         
         # 平滑移动到目标角度
         for i, idx in enumerate(self.joint_indices):
