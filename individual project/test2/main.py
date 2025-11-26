@@ -1,28 +1,33 @@
 import pybullet as p
 import time
-import environmen  # 您的环境文件
-import obstacle    # 刚刚新建的障碍物文件
+import environmen  # 你的环境文件
+import obstacle    # 你的障碍物文件
+import control     # 你的控制文件
 
 if __name__ == "__main__":
     # 1. 搭建基础环境
     robot_id, tray_id, cube_id = environmen.setup_environment()
 
-    # 2. 初始化动态障碍物 (一行代码搞定)
-    # 这会在场景里生成那个红球
+    # 2. 初始化障碍物 (它会显示在场景里，但我们后面不调用它的 update)
     dynamic_obs = obstacle.DynamicObstacle()
 
-    print("仿真开始：请观察红色障碍物随机闯入...")
+    # 3. 初始化机器人控制器
+    controller = control.RobotController(robot_id)
 
-    # 3. 仿真主循环
+    print("仿真开始：障碍物保持静止，专注于测试机械臂抓取...")
+    time.sleep(1) 
+
+    # 4. 执行抓取任务
+    # [关键修改] 去掉了 loop_callback=dynamic_obs.update
+    # 这样机械臂在动的时候，不会触发障碍物的移动逻辑
+    controller.execute_pick_and_place(
+        cube_id, 
+        tray_id, 
+        loop_callback=None 
+    )
+
+    # 5. 任务结束后保持显示
     while True:
-        # --- 让障碍物动起来 ---
-        dynamic_obs.update()
-        
-        # --- (未来) 在这里写避障算法 ---
-        # robot_pos = p.getLinkState(robot_id, 11)[0]
-        # obs_pos = dynamic_obs.get_position()
-        # if distance(robot_pos, obs_pos) < 0.2:
-        #     STOP or RETREAT
-        
+        # 这里也不调用 dynamic_obs.update()，让它彻底静止
         p.stepSimulation()
         time.sleep(1./240.)

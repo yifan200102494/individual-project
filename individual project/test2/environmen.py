@@ -23,7 +23,7 @@ def setup_environment():
     # 5. 加载目标物体 (位置再次调整)
     # ==========================================
     # 修改：y 从 -0.2 改为 -0.4，距离翻倍
-    cubeStartPos = [0.5, -0.6, 0.04] 
+    cubeStartPos = [0.5, -0.3, 0.04]
     cubeStartOrn = p.getQuaternionFromEuler([0, 0, 0])
     
     # 尺寸保持之前的 2/3 (1.3)

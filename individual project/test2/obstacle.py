@@ -65,12 +65,13 @@ class DynamicObstacle:
 
     def update(self):
         """
-        更新伸缩逻辑
+        更新伸缩逻辑 (修复抖动版)
         """
-        # 1. 状态机
+        # ==========================
+        # 1. 状态机逻辑
+        # ==========================
         if self.state == "IDLE":
             self.wait_timer += 1
-            # 随机等待一段时间后伸出
             if self.wait_timer > random.randint(50, 200): 
                 self.state = "EXTENDING"
                 self.target_x = self.extend_x + self.arm_length/2
@@ -78,26 +79,41 @@ class DynamicObstacle:
                 print(">>> 警告：障碍物进入工作区！")
 
         elif self.state == "EXTENDING":
-            if abs(self.current_pos[0] - self.target_x) < 0.01:
+            # 判断是否到达目标 (使用极小的误差范围)
+            if abs(self.current_pos[0] - self.target_x) < 0.001:
+                self.current_pos[0] = self.target_x # 强制对齐，防止微小误差
                 self.state = "HOLDING"
                 self.wait_timer = 0
 
         elif self.state == "HOLDING":
             self.wait_timer += 1
-            # 阻挡一段时间后收回
             if self.wait_timer > random.randint(100, 300):
                 self.state = "RETRACTING"
                 self.target_x = self.retract_x + self.arm_length/2
                 print("<<< 解除：障碍物离开。")
 
         elif self.state == "RETRACTING":
-            if abs(self.current_pos[0] - self.target_x) < 0.01:
+            if abs(self.current_pos[0] - self.target_x) < 0.001:
+                self.current_pos[0] = self.target_x # 强制对齐
                 self.state = "IDLE"
 
-        # 2. 移动逻辑
-        if self.current_pos[0] < self.target_x:
-            self.current_pos[0] += self.speed
-        elif self.current_pos[0] > self.target_x:
-            self.current_pos[0] -= self.speed
+        # ==========================
+        # 2. 移动逻辑 (仅在需要移动的状态下执行)
+        # ==========================
+        if self.state in ["EXTENDING", "RETRACTING"]:
+            # 计算距离差
+            diff = self.target_x - self.current_pos[0]
             
-        p.resetBasePositionAndOrientation(self.body_id, self.current_pos, [0,0,0,1])
+            # 核心修复：防止过冲 (Overshoot)
+            # 如果剩余距离小于一步的速度，直接到位，不要再加减了
+            if abs(diff) <= self.speed:
+                self.current_pos[0] = self.target_x
+            else:
+                # 正常移动
+                if diff > 0:
+                    self.current_pos[0] += self.speed
+                else:
+                    self.current_pos[0] -= self.speed
+            
+            # 应用位置更新
+            p.resetBasePositionAndOrientation(self.body_id, self.current_pos, [0,0,0,1])
