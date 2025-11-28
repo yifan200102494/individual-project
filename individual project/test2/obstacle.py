@@ -15,7 +15,7 @@ class DynamicObstacle:
         
         # 伸缩范围 (X轴坐标)
         self.retract_x = 1.2   # 完全收回的位置 (藏在远处)
-        self.extend_x = 0.45   # 伸出时的位置 (阻挡机器人)
+        self.extend_x = 0.4   # 伸出时的位置 (阻挡机器人)
         
         # 尺寸
         self.arm_length = 0.8 # 臂长
@@ -50,7 +50,7 @@ class DynamicObstacle:
         # ==========================================
         self.state = "IDLE"     # 初始状态
         self.wait_timer = 0     # 计时器
-        self.speed = 0.01       # 伸缩速度
+        self.speed = 0.003       # 伸缩速度
         self.target_x = self.current_pos[0] # 目标X坐标
 
         print(f"红色障碍臂已加载 (无底座版, ID: {self.body_id})")

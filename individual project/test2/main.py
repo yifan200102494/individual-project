@@ -1,33 +1,32 @@
 import pybullet as p
 import time
-import environmen  # 你的环境文件
-import obstacle    # 你的障碍物文件
-import control     # 你的控制文件
+import environmen
+import obstacle
+import control
 
 if __name__ == "__main__":
-    # 1. 搭建基础环境
+    # 1. 搭建环境
     robot_id, tray_id, cube_id = environmen.setup_environment()
 
-    # 2. 初始化障碍物 (它会显示在场景里，但我们后面不调用它的 update)
+    # 2. 初始化动态障碍物
     dynamic_obs = obstacle.DynamicObstacle()
 
-    # 3. 初始化机器人控制器
+    # 3. 初始化控制器
     controller = control.RobotController(robot_id)
+    
+    # 【核心修改】将障碍物的 update 方法绑定到控制器的回调中
+    # 这样控制器在每次 stepSimulation 时，都会顺便让障碍物动一下
+    controller.sim_step_callback = dynamic_obs.update 
 
-    print("仿真开始：障碍物保持静止，专注于测试机械臂抓取...")
+    print("仿真开始：视觉感知系统已启动...")
     time.sleep(1) 
 
-    # 4. 执行抓取任务
-    # [关键修改] 去掉了 loop_callback=dynamic_obs.update
-    # 这样机械臂在动的时候，不会触发障碍物的移动逻辑
-    controller.execute_pick_and_place(
-        cube_id, 
-        tray_id, 
-        loop_callback=None 
-    )
+    # 4. 执行任务
+    # 现在障碍物会在这个函数执行期间正常移动了
+    controller.execute_pick_and_place(cube_id, tray_id)
 
-    # 5. 任务结束后保持显示
+    # 5. 任务结束后继续维持仿真
     while True:
-        # 这里也不调用 dynamic_obs.update()，让它彻底静止
         p.stepSimulation()
+        dynamic_obs.update()
         time.sleep(1./240.)
