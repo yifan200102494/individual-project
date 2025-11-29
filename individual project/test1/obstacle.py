@@ -63,23 +63,6 @@ class DynamicObstacle:
     def get_id(self):
         return self.body_id
 
-    def is_in_work_area(self, work_area_x_threshold=0.8):
-        """
-        判断障碍物是否真正在工作区域内
-        基于障碍物前端的实际X坐标
-        """
-        tip_x = self.current_pos[0] - self.arm_length/2
-        return tip_x < work_area_x_threshold
-
-    def get_state_info(self):
-        """返回障碍物当前状态信息（用于调试）"""
-        tip_pos = self.get_position()
-        return {
-            "state": self.state,
-            "tip_x": tip_pos[0],
-            "in_work_area": self.is_in_work_area()
-        }
-
     def update(self):
         """
         更新伸缩逻辑 (修复抖动版)
@@ -107,13 +90,12 @@ class DynamicObstacle:
             if self.wait_timer > random.randint(100, 300):
                 self.state = "RETRACTING"
                 self.target_x = self.retract_x + self.arm_length/2
-                print("--- 障碍物开始收回（仍在移动中）...")
+                print("<<< 解除：障碍物离开。")
 
         elif self.state == "RETRACTING":
             if abs(self.current_pos[0] - self.target_x) < 0.001:
                 self.current_pos[0] = self.target_x # 强制对齐
                 self.state = "IDLE"
-                print("<<< 解除：障碍物已完全离开工作区。")
 
         # ==========================
         # 2. 移动逻辑 (仅在需要移动的状态下执行)

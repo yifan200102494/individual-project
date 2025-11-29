@@ -12,17 +12,16 @@ if __name__ == "__main__":
     dynamic_obs = obstacle.DynamicObstacle()
 
     # 3. 初始化控制器
-    controller = control.RobotController(robot_id)
+    # 【修改点】这里传入 tray_id
+    controller = control.RobotController(robot_id, tray_id)
     
-    # 【核心修改】将障碍物的 update 方法绑定到控制器的回调中
-    # 这样控制器在每次 stepSimulation 时，都会顺便让障碍物动一下
+    # 绑定回调
     controller.sim_step_callback = dynamic_obs.update 
 
     print("仿真开始：视觉感知系统已启动...")
     time.sleep(1) 
 
     # 4. 执行任务
-    # 现在障碍物会在这个函数执行期间正常移动了
     controller.execute_pick_and_place(cube_id, tray_id)
 
     # 5. 任务结束后继续维持仿真
