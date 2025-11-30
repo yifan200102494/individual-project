@@ -50,7 +50,7 @@ class DynamicObstacle:
         # ==========================================
         self.state = "IDLE"     # 初始状态
         self.wait_timer = 0     # 计时器
-        self.speed = 0.0015       # 伸缩速度
+        self.speed = 0.001       # 伸缩速度
         self.target_x = self.current_pos[0] # 目标X坐标
 
         print(f"红色障碍臂已加载 (无底座版, ID: {self.body_id})")

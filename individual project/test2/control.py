@@ -295,7 +295,7 @@ class RobotController:
         self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)
 
         print(">>> 5. 搬运至终点 (视觉避障开启)")
-        self.move_arm_smart(drop_pos, timeout=20.0)
+        self.move_arm_smart(drop_pos, timeout=20.0, debug=True)
 
         print(">>> 6. 放下")
         self.move_arm_exact(drop_low, steps=300)
