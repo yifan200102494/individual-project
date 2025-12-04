@@ -12,7 +12,7 @@ if __name__ == "__main__":
     dynamic_obs = obstacle.DynamicObstacle()
 
     # 3. 初始化控制器
-    # 【修改点】这里传入 tray_id
+    
     controller = control.RobotController(robot_id, tray_id)
     
     # 绑定回调

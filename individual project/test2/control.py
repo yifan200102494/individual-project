@@ -25,15 +25,15 @@ class CameraSystem:
         self.obstacle_predictor = predictor.ObstaclePredictor(history_size=20, prediction_horizon=0.8)
     
     def _init_camera(self, eye_pos, target_pos, fov, aspect):
-        """初始化摄像头并返回视图矩阵、投影矩阵、逆投影矩阵"""
+        
         view_mat = p.computeViewMatrix(eye_pos, target_pos, [0, 0, 1])
         proj_mat = p.computeProjectionMatrixFOV(fov, aspect, 0.1, 2.0)
         view_np = np.array(view_mat).reshape(4, 4).T
         proj_np = np.array(proj_mat).reshape(4, 4).T
-        return view_mat, proj_mat, np.linalg.inv(proj_np @ view_np)
+        return view_mat, proj_mat, np.linalg.pinv(proj_np @ view_np)
 
     def _scan_camera(self, width, height, view_mat, proj_mat, inv_pv, step=4, z_thresh=0.08):
-        """通用摄像头扫描方法"""
+        
         img = p.getCameraImage(width, height, view_mat, proj_mat, renderer=p.ER_TINY_RENDERER)
         depth = np.reshape(img[3], (height, width))
         seg = np.reshape(img[4], (height, width))
@@ -59,7 +59,7 @@ class CameraSystem:
         return points[points[:, 2] > z_thresh]
 
     def scan_obstacle_volume(self):
-        """主摄像头扫描障碍物体积"""
+        
         points = self._scan_camera(self.width, self.height, self.view_matrix, 
                                    self.proj_matrix, self.inv_pv_mat, step=4, z_thresh=0.08)
         if points is None or len(points) < 5:
@@ -72,7 +72,7 @@ class CameraSystem:
         return {"min": min_bound, "max": max_bound, "center": center}
     
     def scan_obstacle_height_from_side(self):
-        """侧视摄像头扫描障碍物高度"""
+        
         points = self._scan_camera(self.side_width, self.side_height, self.side_view_matrix,
                                    self.side_proj_matrix, self.side_inv_pv_mat, step=2, z_thresh=0.05)
         if points is None or len(points) < 3:
@@ -166,7 +166,7 @@ class RobotController:
             self.step_simulation_with_callback() 
 
     def _get_effective_obstacle_pos(self, obs_aabb, current_eef_pos):
-        """计算有效的障碍物位置（用于避障）"""
+        
         if obs_aabb is None:
             return [10.0, 10.0, 10.0], {"status": "no_obstacle"}
         
@@ -199,9 +199,9 @@ class RobotController:
             current_eef_pos = self.get_current_eef_pos()
             
             # 视觉感知
-            if step_counter % 12 == 0:
-                obs_aabb = self.vision_system.scan_obstacle_volume()
             if step_counter % 24 == 0:
+                obs_aabb = self.vision_system.scan_obstacle_volume()
+            if step_counter % 48 == 0:
                 h_info = self.vision_system.scan_obstacle_height_from_side()
                 self.avoider.set_obstacle_height_info(h_info)
                 if debug and h_info.get("confidence", 0) > 0.3:
