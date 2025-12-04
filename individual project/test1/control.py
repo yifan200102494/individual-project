@@ -37,10 +37,10 @@ class CameraSystem:
             self.width, self.height, 
             self.view_matrix, self.proj_matrix, 
             renderer=p.ER_TINY_RENDERER
-        )
+        )#调用 p.getCameraImage 拍了一张照片
         
-        opengl_depth_buffer = np.reshape(img_arr[3], (self.height, self.width))
-        seg_buffer = np.reshape(img_arr[4], (self.height, self.width))
+        opengl_depth_buffer = np.reshape(img_arr[3], (self.height, self.width))#每个像素代表离相机有多远
+        seg_buffer = np.reshape(img_arr[4], (self.height, self.width))#分割掩码
         
         # === 过滤掉地面、机器人、托盘和动态忽略物体 ===
         valid_mask = (seg_buffer != self.robot_id) & \
@@ -167,7 +167,7 @@ class RobotController:
         for _ in range(20): 
             self.step_simulation_with_callback() 
 
-    def move_arm_smart(self, target_pos, target_orn=None, timeout=10.0):
+    def move_arm_smart(self, target_pos, target_orn=None, timeout=10.0, debug=False):
         if target_orn is None:
             target_orn = p.getQuaternionFromEuler([math.pi, 0, math.pi/2])
         
@@ -175,6 +175,7 @@ class RobotController:
         obs_aabb = None 
         step_counter = 0 
         vision_interval = 3 
+        last_status = ""
 
         while True:
             current_eef_pos = self.get_current_eef_pos()
@@ -202,8 +203,6 @@ class RobotController:
                 effective_obs_pos = [10.0, 10.0, 10.0]
 
             # 3. 避障向量计算
-            # 【修复】始终用末端执行器位置来计算避障向量，
-            # 但用所有关键关节的最近距离来判断威胁程度
             body_points = self.get_critical_body_points()
             min_dist_to_obs = 999.0
             
@@ -216,14 +215,24 @@ class RobotController:
             eef_dist = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, effective_obs_pos)]))
             min_dist_to_obs = min(min_dist_to_obs, eef_dist)
             
-            # 【关键修复】始终用末端执行器位置来计算下一步位置
+            # 计算下一步位置
             virtual_next_pos, status = self.avoider.compute_modified_step(
                 current_eef_pos, target_pos, effective_obs_pos
             )
             
+            # 调试输出（状态变化时才打印）
+            if debug and status != last_status:
+                dist_to_target = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, target_pos)]))
+                print(f"  [调试] 状态: {status}, 距目标: {dist_to_target:.3f}, 距障碍: {eef_dist:.3f}")
+                last_status = status
+            
             # 4. 执行运动
             dist_to_target = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, target_pos)]))
-            if dist_to_target < 0.02 and status == "ARRIVED":
+            
+            # 【改进】放宽到达判定阈值，避免因精度问题卡住
+            if dist_to_target < 0.08:
+                if debug:
+                    print(f"  [调试] 到达目标！距离: {dist_to_target:.3f}")
                 break
             
             joint_poses = p.calculateInverseKinematics(
@@ -283,10 +292,10 @@ class RobotController:
         for _ in range(100): self.step_simulation_with_callback()
 
         print(">>> 4. 抬起 (视觉避障开启)")
-        self.move_arm_smart(pre_grasp, timeout=10.0)
+        self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)
 
         print(">>> 5. 搬运至终点 (视觉避障开启)")
-        self.move_arm_smart(drop_pos, timeout=20.0)
+        self.move_arm_smart(drop_pos, timeout=30.0, debug=True)
 
         print(">>> 6. 放下")
         self.move_arm_exact(drop_low, steps=300)

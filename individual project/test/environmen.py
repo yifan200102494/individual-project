@@ -12,7 +12,12 @@ def setup_environment():
     # 加载机器人
     robotId = p.loadURDF("franka_panda/panda.urdf", [0, 0, 0], useFixedBase=True)
 
-
+    # ==========================================
+    # 【修改点】托盘位置调整
+    # 原来是 [0.6, 0.5, 0] (太远了，直线距离约0.78m)
+    # 改为   [0.4, 0.4, 0] (直线距离约0.56m)
+    # 这样即使抬高到 Z=0.5，总距离也就 0.75m，完全够得着
+    # ==========================================
     trayPos = [0.5, 0.4, 0] 
     trayId = p.loadURDF("tray/traybox.urdf", trayPos, globalScaling=0.8)
 
