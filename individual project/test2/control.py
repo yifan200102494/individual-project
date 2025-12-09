@@ -114,13 +114,13 @@ class CameraSystem:
             p.addUserDebugLine(corners[s], corners[e], [0,1,0], lineWidth=2, lifeTime=0.2)
         
         cz = self.obstacle_height_info.get("clearance_height", 0)
-        if cz > 0.1:
-            cc = [[mn[0]-0.1,mn[1]-0.1,cz], [mx[0]+0.1,mn[1]-0.1,cz], 
-                  [mn[0]-0.1,mx[1]+0.1,cz], [mx[0]+0.1,mx[1]+0.1,cz]]
-            for s, e in [(0,1),(1,3),(3,2),(2,0)]:
-                p.addUserDebugLine(cc[s], cc[e], [0,0.5,1], lineWidth=3, lifeTime=0.2)
-            p.addUserDebugText(f"Safe: {cz:.2f}m", [(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,cz+0.02], 
-                              [0,0.5,1], textSize=1.2, lifeTime=0.2)
+        # if cz > 0.1:
+        #     cc = [[mn[0]-0.1,mn[1]-0.1,cz], [mx[0]+0.1,mn[1]-0.1,cz], 
+        #           [mn[0]-0.1,mx[1]+0.1,cz], [mx[0]+0.1,mx[1]+0.1,cz]]
+        #     for s, e in [(0,1),(1,3),(3,2),(2,0)]:
+        #         p.addUserDebugLine(cc[s], cc[e], [0,0.5,1], lineWidth=3, lifeTime=0.2)
+        #     p.addUserDebugText(f"Safe: {cz:.2f}m", [(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,cz+0.02], 
+        #                       [0,0.5,1], textSize=1.2, lifeTime=0.2)
 
 
 class RobotController:
@@ -132,6 +132,11 @@ class RobotController:
         self.vision_system = CameraSystem(robot_id, tray_id)
         self.avoider = avoidance.VisualAvoidanceSystem(safe_distance=0.40, stop_distance=0.15)
         self.sim_step_callback = None
+        
+        # 被抓物品信息 - 用于避障时考虑物品体积
+        self.grabbed_object_id = None
+        self.grabbed_object_size = None  # [半宽, 半深, 半高]
+        self.grabbed_object_offset = 0.0  # 物品底部相对于末端执行器的偏移
         
         p.setPhysicsEngineParameter(numSolverIterations=200, contactBreakingThreshold=0.001)
         self.ll, self.ul, self.jr = [-7]*7, [7]*7, [7]*7
@@ -145,6 +150,40 @@ class RobotController:
     
     def clear_ignored_object(self, obj_id):
         self.vision_system.ignored_ids.discard(obj_id)
+    
+    def set_grabbed_object(self, obj_id):
+        """设置被抓物品，自动获取其尺寸用于避障计算"""
+        self.grabbed_object_id = obj_id
+        if obj_id is not None:
+            # 获取物品的AABB边界框
+            aabb_min, aabb_max = p.getAABB(obj_id)
+            # 计算半尺寸
+            half_size = [(aabb_max[i] - aabb_min[i]) / 2 for i in range(3)]
+            self.grabbed_object_size = half_size
+            # 物品底部到中心的距离（物品被抓住后，底部会在夹爪下方）
+            self.grabbed_object_offset = half_size[2] + 0.02  # 加上夹爪到物品中心的间隙
+            print(f"  [物品体积] 尺寸: {[f'{s*2:.3f}' for s in half_size]}m, 底部偏移: {self.grabbed_object_offset:.3f}m")
+        else:
+            self.grabbed_object_size = None
+            self.grabbed_object_offset = 0.0
+    
+    def clear_grabbed_object(self):
+        """清除被抓物品信息"""
+        self.grabbed_object_id = None
+        self.grabbed_object_size = None
+        self.grabbed_object_offset = 0.0
+    
+    def get_effective_collision_bounds(self):
+        """获取考虑被抓物品后的有效碰撞边界扩展量"""
+        if self.grabbed_object_size is None:
+            return {"radius_extend": 0.0, "bottom_extend": 0.0}
+        
+        # 水平方向扩展（物品的最大水平半径）
+        radius_extend = max(self.grabbed_object_size[0], self.grabbed_object_size[1])
+        # 向下扩展（物品底部相对于末端执行器的距离）
+        bottom_extend = self.grabbed_object_offset
+        
+        return {"radius_extend": radius_extend, "bottom_extend": bottom_extend}
     
     def get_critical_body_points(self):
         return [list(p.getLinkState(self.robot_id, j)[4]) for j in self.critical_joints]
@@ -201,7 +240,7 @@ class RobotController:
             # 视觉感知
             if step_counter % 24 == 0:
                 obs_aabb = self.vision_system.scan_obstacle_volume()
-            if step_counter % 48 == 0:
+            if step_counter % 24 == 0:
                 h_info = self.vision_system.scan_obstacle_height_from_side()
                 self.avoider.set_obstacle_height_info(h_info)
                 if debug and h_info.get("confidence", 0) > 0.3:
@@ -218,6 +257,10 @@ class RobotController:
             # 传递运动信息
             trend = self.vision_system.get_motion_trend()
             self.avoider.set_obstacle_motion(trend.get("velocity"), trend.get("is_moving", False), trend.get("direction"))
+            
+            # 传递被抓物品的碰撞边界扩展量
+            bounds = self.get_effective_collision_bounds()
+            self.avoider.set_grabbed_object_bounds(bounds["radius_extend"], bounds["bottom_extend"])
             
             # 计算下一步
             virtual_next, status = self.avoider.compute_modified_step(current_eef_pos, target_pos, eff_obs_pos)
@@ -267,12 +310,27 @@ class RobotController:
         
         self.set_ignored_object(cube_id)
         
+        # 定义抓取后的回调 - 记录被抓物品体积
+        def grasp_and_record():
+            self.move_gripper(False)
+            for _ in range(100):
+                self.step_simulation_with_callback()
+            # 抓取成功后，记录物品体积用于避障
+            self.set_grabbed_object(cube_id)
+        
+        # 定义放下后的回调 - 清除物品体积信息
+        def release_and_clear():
+            self.move_arm_exact(drop_low, steps=300)
+            self.move_gripper(True)
+            # 放下后清除物品体积信息
+            self.clear_grabbed_object()
+        
         steps = [("1. 接近方块上方", lambda: (self.move_gripper(True), self.move_arm_smart(pre_grasp, timeout=15.0))),
                  ("2. 精准下降", lambda: self.move_arm_exact(grasp_pos, steps=200)),
-                 ("3. 闭合夹爪", lambda: (self.move_gripper(False), [self.step_simulation_with_callback() for _ in range(100)])),
-                 ("4. 抬起", lambda: self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)),
-                 ("5. 搬运至终点", lambda: self.move_arm_smart(drop_pos, timeout=30.0, debug=True)),
-                 ("6. 放下", lambda: (self.move_arm_exact(drop_low, steps=300), self.move_gripper(True)))]
+                 ("3. 闭合夹爪并记录物品体积", grasp_and_record),
+                 ("4. 抬起(避障考虑物品体积)", lambda: self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)),
+                 ("5. 搬运至终点(避障考虑物品体积)", lambda: self.move_arm_smart(drop_pos, timeout=30.0, debug=True)),
+                 ("6. 放下并清除体积信息", release_and_clear)]
         
         for name, action in steps:
             print(f">>> {name}")

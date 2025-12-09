@@ -5,13 +5,13 @@ import math
 
 def setup_environment():
     p.connect(p.GUI)
+    
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.8)
     p.loadURDF("plane.urdf")
     
     # 加载机器人
     robotId = p.loadURDF("franka_panda/panda.urdf", [0, 0, 0], useFixedBase=True)
-
 
     trayPos = [0.5, 0.4, 0] 
     trayId = p.loadURDF("tray/traybox.urdf", trayPos, globalScaling=0.8)

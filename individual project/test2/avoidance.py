@@ -10,6 +10,15 @@ class VisualAvoidanceSystem:
         self.obstacle_direction = None
         self.obstacle_height_info = {"max_height": 0.0, "clearance_height": 0.15, "confidence": 0.0}
         
+        # 被抓物品的碰撞边界扩展
+        self.grabbed_radius_extend = 0.0   # 水平方向扩展
+        self.grabbed_bottom_extend = 0.0   # 向下扩展（物品底部）
+    
+    def set_grabbed_object_bounds(self, radius_extend=0.0, bottom_extend=0.0):
+        """设置被抓物品的碰撞边界扩展量"""
+        self.grabbed_radius_extend = radius_extend
+        self.grabbed_bottom_extend = bottom_extend
+        
     def set_obstacle_height_info(self, info):
         if info: self.obstacle_height_info.update(info)
         
@@ -18,13 +27,13 @@ class VisualAvoidanceSystem:
         self.obstacle_is_moving, self.obstacle_direction = is_moving, direction
 
     def _get_clearance_height(self, obs_z):
-        """获取有效安全高度"""
+        #获取有效安全高度
         if self.obstacle_height_info.get("confidence", 0) < 0.3:
             return obs_z + 0.10
         return self.obstacle_height_info.get("clearance_height", 0.15)
     
     def _compute_overhead_move(self, curr, targ, obs, v_dir, h_above_obs, vert_diff, dist):
-        """计算高空越障移动方向"""
+        #计算高空越障移动方向
         h_dist = np.linalg.norm(curr[:2] - obs[:2])
         move_dir = np.array([v_dir[0], v_dir[1], 0])
         
@@ -76,21 +85,29 @@ class VisualAvoidanceSystem:
         v_full = targ - curr
         dist_targ = np.linalg.norm(v_full)
         c_vec = obs - curr
-        dist_obs = np.linalg.norm(c_vec)
+        dist_obs_raw = np.linalg.norm(c_vec)
+        
+        # === 考虑被抓物品体积的距离修正 ===
+        # 有效距离 = 实际距离 - 物品水平半径扩展
+        dist_obs = max(dist_obs_raw - self.grabbed_radius_extend, 0.01)
         
         if dist_targ < 0.01: return current_pos, "ARRIVED"
         v_dir = v_full / dist_targ
-        c_hat = c_vec / dist_obs if dist_obs > 0.001 else np.array([1, 0, 0])
+        c_hat = c_vec / dist_obs_raw if dist_obs_raw > 0.001 else np.array([1, 0, 0])
         
         # 基础状态检测
         if dist_targ < 0.02: return current_pos, "ARRIVED"
         if dist_targ < 0.18: return (curr + v_dir * 0.04).tolist(), "DOCKING"
-        if dist_obs > 0.30: return (curr + v_dir * 0.05).tolist(), "CLEAR_PATH"
+        # 考虑物品体积后的安全距离判断
+        safe_clear_dist = 0.30 + self.grabbed_radius_extend
+        if dist_obs > safe_clear_dist: return (curr + v_dir * 0.05).tolist(), "CLEAR_PATH"
         
-        # 高度计算
+        # === 高度计算 - 考虑物品底部扩展 ===
         eff_clear = self._get_clearance_height(obs[2])
-        h_above_clear = curr[2] - eff_clear
-        h_above_obs = curr[2] - obs[2]
+        # 末端执行器高度减去物品底部偏移 = 物品最低点的有效高度
+        effective_eef_z = curr[2] - self.grabbed_bottom_extend
+        h_above_clear = effective_eef_z - eff_clear  # 物品底部距安全高度的余量
+        h_above_obs = effective_eef_z - obs[2]       # 物品底部距障碍物的余量
         vert_diff = targ[2] - curr[2]
         horiz_diff = np.linalg.norm(targ[:2] - curr[:2])
         
@@ -118,8 +135,8 @@ class VisualAvoidanceSystem:
         if np.dot(v_dir, c_hat) < -0.1:
             return (curr + v_dir * 0.05).tolist(), "LEAVING"
         
-        # 动态安全距离
-        eff_safe = self.d_th2
+        # 动态安全距离 - 考虑被抓物品体积
+        eff_safe = self.d_th2 + self.grabbed_radius_extend  # 加上物品水平半径
         if self.obstacle_is_moving and self.obstacle_direction == 'approaching':
             eff_safe += min(np.linalg.norm(self.obstacle_velocity) * 50, 0.15)
         elif self.obstacle_is_moving and self.obstacle_direction == 'leaving':

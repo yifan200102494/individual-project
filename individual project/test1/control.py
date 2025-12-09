@@ -2,304 +2,337 @@ import numpy as np
 import pybullet as p
 import math
 import time
-import avoidance  # 确保导入了 avoidance
+import avoidance
+import predictor
 
 class CameraSystem:
     def __init__(self, robot_id, tray_id):
-        self.robot_id = robot_id
-        self.tray_id = tray_id  # 记录托盘ID，用于过滤
-        self.plane_id = 0  # 地面ID通常是0（第一个加载的物体）
-        self.ignored_ids = set()  # 动态忽略的物体ID集合（如抓取目标）
+        self.robot_id, self.tray_id, self.plane_id = robot_id, tray_id, 0
+        self.ignored_ids = set()
         
-        self.camera_pos = np.array([0.8, 0, 0.6])
-        self.target_pos = np.array([0.4, 0, 0.0])
-        self.up_vector = np.array([0, 0, 1])
+        # 主摄像头（俯视）
+        self.width, self.height = 128, 128
+        self.view_matrix, self.proj_matrix, self.inv_pv_mat = self._init_camera(
+            [0.8, 0, 0.6], [0.4, 0, 0], 60, 1.0)
         
-        self.view_matrix = p.computeViewMatrix(
-            cameraEyePosition=self.camera_pos,
-            cameraTargetPosition=self.target_pos,
-            cameraUpVector=self.up_vector
-        )
+        # 侧视摄像头（测量高度）
+        self.side_width, self.side_height = 160, 120
+        self.side_view_matrix, self.side_proj_matrix, self.side_inv_pv_mat = self._init_camera(
+            [0.5, -0.8, 0.4], [0.5, 0, 0.3], 50, 160/120)
         
-        self.fov = 60
-        self.width = 128
-        self.height = 128
-        self.proj_matrix = p.computeProjectionMatrixFOV(
-            fov=self.fov, aspect=1.0, nearVal=0.1, farVal=2.0
-        )
+        self.obstacle_height_info = {"max_height": 0.0, "min_height": 0.0, 
+            "clearance_height": 0.0, "confidence": 0.0, "last_update": 0}
+        self.obstacle_predictor = predictor.ObstaclePredictor(history_size=20, prediction_horizon=0.8)
+    
+    def _init_camera(self, eye_pos, target_pos, fov, aspect):
         
-        view_mat = np.array(self.view_matrix).reshape(4, 4).T
-        proj_mat = np.array(self.proj_matrix).reshape(4, 4).T
-        self.inv_pv_mat = np.linalg.inv(np.dot(proj_mat, view_mat))
+        view_mat = p.computeViewMatrix(eye_pos, target_pos, [0, 0, 1])
+        proj_mat = p.computeProjectionMatrixFOV(fov, aspect, 0.1, 2.0)
+        view_np = np.array(view_mat).reshape(4, 4).T
+        proj_np = np.array(proj_mat).reshape(4, 4).T
+        return view_mat, proj_mat, np.linalg.pinv(proj_np @ view_np)
 
-    def scan_obstacle_volume(self):
-        img_arr = p.getCameraImage(
-            self.width, self.height, 
-            self.view_matrix, self.proj_matrix, 
-            renderer=p.ER_TINY_RENDERER
-        )#调用 p.getCameraImage 拍了一张照片
+    def _scan_camera(self, width, height, view_mat, proj_mat, inv_pv, step=4, z_thresh=0.08):
         
-        opengl_depth_buffer = np.reshape(img_arr[3], (self.height, self.width))#每个像素代表离相机有多远
-        seg_buffer = np.reshape(img_arr[4], (self.height, self.width))#分割掩码
+        img = p.getCameraImage(width, height, view_mat, proj_mat, renderer=p.ER_TINY_RENDERER)
+        depth = np.reshape(img[3], (height, width))
+        seg = np.reshape(img[4], (height, width))
         
-        # === 过滤掉地面、机器人、托盘和动态忽略物体 ===
-        valid_mask = (seg_buffer != self.robot_id) & \
-                     (seg_buffer != self.tray_id) & \
-                     (seg_buffer != self.plane_id) & \
-                     (opengl_depth_buffer < 0.95)
+        # 过滤无效物体
+        mask = (seg != self.robot_id) & (seg != self.tray_id) & (seg != self.plane_id) & (depth < 0.95)
+        for ign_id in self.ignored_ids:
+            mask &= (seg != ign_id)
+        if not np.any(mask):
+            return None
         
-        # 过滤掉动态忽略的物体（如当前要抓取的目标）
-        for ignored_id in self.ignored_ids:
-            valid_mask = valid_mask & (seg_buffer != ignored_id)
+        # 采样并转换到世界坐标
+        rows, cols = np.where(mask)
+        rows, cols = rows[::step], cols[::step]
+        depths = depth[rows, cols]
         
-        if not np.any(valid_mask):
-            return None 
-        
-        step = 4 
-        rows, cols = np.where(valid_mask)
-        rows = rows[::step]
-        cols = cols[::step]
-        depths = opengl_depth_buffer[rows, cols]
-        
-        x_ndc = (2 * cols / self.width) - 1
-        y_ndc = 1 - (2 * rows / self.height)
+        x_ndc = (2 * cols / width) - 1
+        y_ndc = 1 - (2 * rows / height)
         z_ndc = 2 * depths - 1
         
-        pixel_coords = np.vstack([x_ndc, y_ndc, z_ndc, np.ones_like(x_ndc)])
-        world_coords_homo = np.dot(self.inv_pv_mat, pixel_coords)
-        world_coords = world_coords_homo[:3] / world_coords_homo[3]
-        points_3d = world_coords.T
-        
-        # 过滤掉接近地面的点（增加阈值以避免杂点）
-        points_3d = points_3d[points_3d[:, 2] > 0.08]
-        
-        if len(points_3d) < 5:
-            return None
+        world = np.dot(inv_pv, np.vstack([x_ndc, y_ndc, z_ndc, np.ones_like(x_ndc)]))
+        points = (world[:3] / world[3]).T
+        return points[points[:, 2] > z_thresh]
 
-        min_bound = np.min(points_3d, axis=0)
-        max_bound = np.max(points_3d, axis=0)
-        center = np.mean(points_3d, axis=0)
+    def scan_obstacle_volume(self):
         
+        points = self._scan_camera(self.width, self.height, self.view_matrix, 
+                                   self.proj_matrix, self.inv_pv_mat, step=4, z_thresh=0.08)
+        if points is None or len(points) < 5:
+            return None
+        
+        min_bound, max_bound = np.min(points, axis=0), np.max(points, axis=0)
+        center = np.mean(points, axis=0)
         self.draw_debug_box(min_bound, max_bound)
+        self.obstacle_predictor.update(center)
+        return {"min": min_bound, "max": max_bound, "center": center}
+    
+    def scan_obstacle_height_from_side(self):
         
-        return {
-            "min": min_bound,
-            "max": max_bound,
-            "center": center
+        points = self._scan_camera(self.side_width, self.side_height, self.side_view_matrix,
+                                   self.side_proj_matrix, self.side_inv_pv_mat, step=2, z_thresh=0.05)
+        if points is None or len(points) < 3:
+            self.obstacle_height_info = {"max_height": 0.0, "min_height": 0.0,
+                "clearance_height": 0.15, "confidence": 0.0, "last_update": time.time()}
+            return self.obstacle_height_info
+        
+        z = points[:, 2]
+        self.obstacle_height_info = {
+            "max_height": float(np.max(z)), "min_height": float(np.min(z)),
+            "height_95": float(np.percentile(z, 95)),
+            "clearance_height": float(np.percentile(z, 95) + 0.08),
+            "confidence": min(len(points) / 100.0, 1.0),
+            "point_count": len(points), "last_update": time.time()
         }
+        return self.obstacle_height_info
+    
+    def get_obstacle_clearance_height(self):
+        return self.obstacle_height_info.get("clearance_height", 0.15)
+    
+    def get_obstacle_height_info(self):
+        return self.obstacle_height_info
+    
+    def get_predicted_obstacle_pos(self, robot_pos):
+        return self.obstacle_predictor.get_avoidance_position(robot_pos)
+    
+    def get_motion_trend(self):
+        return self.obstacle_predictor.get_motion_trend()
+    
+    def should_preemptive_avoid(self, robot_pos, robot_target):
+        return self.obstacle_predictor.should_preemptive_avoid(robot_pos, robot_target)
 
     def draw_debug_box(self, min_pos, max_pos):
         p.removeAllUserDebugItems()
-        corners = [
-            [min_pos[0], min_pos[1], min_pos[2]],
-            [max_pos[0], min_pos[1], min_pos[2]],
-            [min_pos[0], max_pos[1], min_pos[2]],
-            [max_pos[0], max_pos[1], min_pos[2]],
-            [min_pos[0], min_pos[1], max_pos[2]],
-            [max_pos[0], min_pos[1], max_pos[2]],
-            [min_pos[0], max_pos[1], max_pos[2]],
-            [max_pos[0], max_pos[1], max_pos[2]]
-        ]
-        lines = [
-            (0,1), (1,3), (3,2), (2,0),
-            (4,5), (5,7), (7,6), (6,4),
-            (0,4), (1,5), (2,6), (3,7)
-        ]
-        for start, end in lines:
-            p.addUserDebugLine(corners[start], corners[end], [0, 1, 0], lineWidth=2, lifeTime=0.2)
+        mn, mx = min_pos, max_pos
+        corners = [[mn[0],mn[1],mn[2]], [mx[0],mn[1],mn[2]], [mn[0],mx[1],mn[2]], [mx[0],mx[1],mn[2]],
+                   [mn[0],mn[1],mx[2]], [mx[0],mn[1],mx[2]], [mn[0],mx[1],mx[2]], [mx[0],mx[1],mx[2]]]
+        for s, e in [(0,1),(1,3),(3,2),(2,0),(4,5),(5,7),(7,6),(6,4),(0,4),(1,5),(2,6),(3,7)]:
+            p.addUserDebugLine(corners[s], corners[e], [0,1,0], lineWidth=2, lifeTime=0.2)
+        
+        cz = self.obstacle_height_info.get("clearance_height", 0)
+        if cz > 0.1:
+            cc = [[mn[0]-0.1,mn[1]-0.1,cz], [mx[0]+0.1,mn[1]-0.1,cz], 
+                  [mn[0]-0.1,mx[1]+0.1,cz], [mx[0]+0.1,mx[1]+0.1,cz]]
+            for s, e in [(0,1),(1,3),(3,2),(2,0)]:
+                p.addUserDebugLine(cc[s], cc[e], [0,0.5,1], lineWidth=3, lifeTime=0.2)
+            p.addUserDebugText(f"Safe: {cz:.2f}m", [(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,cz+0.02], 
+                              [0,0.5,1], textSize=1.2, lifeTime=0.2)
 
 
 class RobotController:
-    # === 修改点：初始化接收 tray_id ===
     def __init__(self, robot_id, tray_id):
-        self.robot_id = robot_id
-        self.eef_id = 11 
-        self.critical_joints = [11, 6, 4] 
-        self.finger_indices = [9, 10] 
-        self.gripper_open_pos = 0.05 
-        self.gripper_closed_pos = 0.03 
+        self.robot_id, self.eef_id = robot_id, 11
+        self.critical_joints, self.finger_indices = [11, 6, 4], [9, 10]
+        self.gripper_open_pos, self.gripper_closed_pos = 0.05, 0.03
         
-        # 将 tray_id 传给视觉系统
         self.vision_system = CameraSystem(robot_id, tray_id)
         self.avoider = avoidance.VisualAvoidanceSystem(safe_distance=0.40, stop_distance=0.15)
+        self.sim_step_callback = None
         
-        self.sim_step_callback = None 
+        # 被抓物品信息 - 用于避障时考虑物品体积
+        self.grabbed_object_id = None
+        self.grabbed_object_size = None  # [半宽, 半深, 半高]
+        self.grabbed_object_offset = 0.0  # 物品底部相对于末端执行器的偏移
         
         p.setPhysicsEngineParameter(numSolverIterations=200, contactBreakingThreshold=0.001)
-        self.ll = [-7]*7
-        self.ul = [7]*7
-        self.jr = [7]*7
+        self.ll, self.ul, self.jr = [-7]*7, [7]*7, [7]*7
         self.rp = [0, -math.pi/4, 0, -math.pi/2, 0, math.pi/3, 0]
         
-        for finger in self.finger_indices:
-            p.changeDynamics(self.robot_id, finger, lateralFriction=10.0, frictionAnchor=True)
+        for f in self.finger_indices:
+            p.changeDynamics(self.robot_id, f, lateralFriction=10.0, frictionAnchor=True)
 
-    def set_ignored_object(self, object_id):
-        """设置要忽略的物体ID（如当前要抓取的目标）"""
-        self.vision_system.ignored_ids.add(object_id)
+    def set_ignored_object(self, obj_id):
+        self.vision_system.ignored_ids.add(obj_id)
     
-    def clear_ignored_object(self, object_id):
-        """从忽略列表中移除物体ID"""
-        self.vision_system.ignored_ids.discard(object_id)
+    def clear_ignored_object(self, obj_id):
+        self.vision_system.ignored_ids.discard(obj_id)
+    
+    def set_grabbed_object(self, obj_id):
+        """设置被抓物品，自动获取其尺寸用于避障计算"""
+        self.grabbed_object_id = obj_id
+        if obj_id is not None:
+            # 获取物品的AABB边界框
+            aabb_min, aabb_max = p.getAABB(obj_id)
+            # 计算半尺寸
+            half_size = [(aabb_max[i] - aabb_min[i]) / 2 for i in range(3)]
+            self.grabbed_object_size = half_size
+            # 物品底部到中心的距离（物品被抓住后，底部会在夹爪下方）
+            self.grabbed_object_offset = half_size[2] + 0.02  # 加上夹爪到物品中心的间隙
+            print(f"  [物品体积] 尺寸: {[f'{s*2:.3f}' for s in half_size]}m, 底部偏移: {self.grabbed_object_offset:.3f}m")
+        else:
+            self.grabbed_object_size = None
+            self.grabbed_object_offset = 0.0
+    
+    def clear_grabbed_object(self):
+        """清除被抓物品信息"""
+        self.grabbed_object_id = None
+        self.grabbed_object_size = None
+        self.grabbed_object_offset = 0.0
+    
+    def get_effective_collision_bounds(self):
+        """获取考虑被抓物品后的有效碰撞边界扩展量"""
+        if self.grabbed_object_size is None:
+            return {"radius_extend": 0.0, "bottom_extend": 0.0}
+        
+        # 水平方向扩展（物品的最大水平半径）
+        radius_extend = max(self.grabbed_object_size[0], self.grabbed_object_size[1])
+        # 向下扩展（物品底部相对于末端执行器的距离）
+        bottom_extend = self.grabbed_object_offset
+        
+        return {"radius_extend": radius_extend, "bottom_extend": bottom_extend}
     
     def get_critical_body_points(self):
-        points = []
-        for joint_index in self.critical_joints:
-            state = p.getLinkState(self.robot_id, joint_index)
-            pos = list(state[4]) 
-            points.append(pos)
-        return points
+        return [list(p.getLinkState(self.robot_id, j)[4]) for j in self.critical_joints]
 
     def get_current_eef_pos(self):
-        state = p.getLinkState(self.robot_id, self.eef_id)
-        return list(state[4]) 
+        return list(p.getLinkState(self.robot_id, self.eef_id)[4])
 
     def step_simulation_with_callback(self):
         p.stepSimulation()
         if self.sim_step_callback:
-            self.sim_step_callback() 
+            self.sim_step_callback()
         time.sleep(1./240.)
 
     def move_gripper(self, open_state=True):
-        target_pos = self.gripper_open_pos if open_state else self.gripper_closed_pos
+        pos = self.gripper_open_pos if open_state else self.gripper_closed_pos
         for i in self.finger_indices:
-            p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=target_pos, force=500)
-        for _ in range(20): 
+            p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=pos, force=500)
+        for _ in range(20):
             self.step_simulation_with_callback() 
+
+    def _get_effective_obstacle_pos(self, obs_aabb, current_eef_pos):
+        
+        if obs_aabb is None:
+            return [10.0, 10.0, 10.0], {"status": "no_obstacle"}
+        
+        predicted_pos, pred_info = self.vision_system.get_predicted_obstacle_pos(current_eef_pos)
+        if predicted_pos is not None:
+            effective_pos = predicted_pos
+            if pred_info.get("direction") == "approaching":
+                bias = 0.05
+                d = np.array(current_eef_pos) - np.array(predicted_pos)
+                if np.linalg.norm(d) > 0.01:
+                    d = d / np.linalg.norm(d)
+                    effective_pos = [predicted_pos[i] + d[i] * bias for i in range(3)]
+            return effective_pos, pred_info
+        
+        # 回退方法
+        effective_pos = [max(obs_aabb["min"][i], min(current_eef_pos[i], obs_aabb["max"][i])) for i in range(3)]
+        if math.sqrt(sum((a-b)**2 for a,b in zip(current_eef_pos, effective_pos))) < 0.05:
+            effective_pos = obs_aabb["center"].tolist()
+        return effective_pos, {"status": "fallback"}
 
     def move_arm_smart(self, target_pos, target_orn=None, timeout=10.0, debug=False):
         if target_orn is None:
             target_orn = p.getQuaternionFromEuler([math.pi, 0, math.pi/2])
         
         start_time = time.time()
-        obs_aabb = None 
-        step_counter = 0 
-        vision_interval = 3 
-        last_status = ""
+        obs_aabb, step_counter = None, 0
+        last_status, last_pred_info = "", None
 
         while True:
             current_eef_pos = self.get_current_eef_pos()
             
-            # 1. 视觉感知（每次都更新，如果没检测到障碍物则清空）
-            if step_counter % vision_interval == 0:
-                scan_result = self.vision_system.scan_obstacle_volume()
-                obs_aabb = scan_result  # 直接赋值，如果没检测到则为 None
+            # 视觉感知
+            if step_counter % 24 == 0:
+                obs_aabb = self.vision_system.scan_obstacle_volume()
+            if step_counter % 48 == 0:
+                h_info = self.vision_system.scan_obstacle_height_from_side()
+                self.avoider.set_obstacle_height_info(h_info)
+                if debug and h_info.get("confidence", 0) > 0.3:
+                    print(f"  [侧视] 高度:{h_info.get('max_height',0):.3f}m, 安全:{h_info.get('clearance_height',0):.3f}m")
             step_counter += 1
 
-            # 2. 威胁点计算
-            if obs_aabb is not None:
-                obs_min = obs_aabb["min"]
-                obs_max = obs_aabb["max"]
-                
-                effective_obs_pos = []
-                for i in range(3):
-                    val = max(obs_min[i], min(current_eef_pos[i], obs_max[i]))
-                    effective_obs_pos.append(val)
-                
-                dist_to_clamped = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, effective_obs_pos)]))
-                if dist_to_clamped < 0.05:
-                     effective_obs_pos = obs_aabb["center"].tolist()
-            else:
-                effective_obs_pos = [10.0, 10.0, 10.0]
+            # 获取有效障碍物位置
+            eff_obs_pos, pred_info = self._get_effective_obstacle_pos(obs_aabb, current_eef_pos)
 
-            # 3. 避障向量计算
-            body_points = self.get_critical_body_points()
-            min_dist_to_obs = 999.0
+            # 预判调整安全距离
+            _, _, rec = self.vision_system.should_preemptive_avoid(current_eef_pos, target_pos)
+            self.avoider.d_th2 = {"emergency_avoid": 0.55, "preemptive_avoid": 0.48}.get(rec, 0.40)
+
+            # 传递运动信息
+            trend = self.vision_system.get_motion_trend()
+            self.avoider.set_obstacle_motion(trend.get("velocity"), trend.get("is_moving", False), trend.get("direction"))
             
-            for point in body_points:
-                dist = math.sqrt(sum([(a-b)**2 for a,b in zip(point, effective_obs_pos)]))
-                if dist < min_dist_to_obs:
-                    min_dist_to_obs = dist
+            # 传递被抓物品的碰撞边界扩展量
+            bounds = self.get_effective_collision_bounds()
+            self.avoider.set_grabbed_object_bounds(bounds["radius_extend"], bounds["bottom_extend"])
             
-            # 末端执行器到障碍物的距离也要考虑
-            eef_dist = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, effective_obs_pos)]))
-            min_dist_to_obs = min(min_dist_to_obs, eef_dist)
+            # 计算下一步
+            virtual_next, status = self.avoider.compute_modified_step(current_eef_pos, target_pos, eff_obs_pos)
             
-            # 计算下一步位置
-            virtual_next_pos, status = self.avoider.compute_modified_step(
-                current_eef_pos, target_pos, effective_obs_pos
-            )
+            # 调试输出
+            if debug and (status != last_status or pred_info.get("direction") != (last_pred_info or {}).get("direction")):
+                eef_dist = math.sqrt(sum((a-b)**2 for a,b in zip(current_eef_pos, eff_obs_pos)))
+                print(f"  [调试] 状态:{status}, 距障碍:{eef_dist:.3f}, 方向:{pred_info.get('direction','-')}")
+                last_status, last_pred_info = status, pred_info.copy() if isinstance(pred_info, dict) else pred_info
             
-            # 调试输出（状态变化时才打印）
-            if debug and status != last_status:
-                dist_to_target = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, target_pos)]))
-                print(f"  [调试] 状态: {status}, 距目标: {dist_to_target:.3f}, 距障碍: {eef_dist:.3f}")
-                last_status = status
-            
-            # 4. 执行运动
-            dist_to_target = math.sqrt(sum([(a-b)**2 for a,b in zip(current_eef_pos, target_pos)]))
-            
-            # 【改进】放宽到达判定阈值，避免因精度问题卡住
-            if dist_to_target < 0.08:
-                if debug:
-                    print(f"  [调试] 到达目标！距离: {dist_to_target:.3f}")
+            # 到达检测
+            dist = math.sqrt(sum((a-b)**2 for a,b in zip(current_eef_pos, target_pos)))
+            if dist < 0.08:
+                if debug: print(f"  [调试] 到达目标！")
                 break
             
-            joint_poses = p.calculateInverseKinematics(
-                self.robot_id, self.eef_id, virtual_next_pos, target_orn,
-                lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp
-            )
-            
+            # 执行运动
+            joints = p.calculateInverseKinematics(self.robot_id, self.eef_id, virtual_next, target_orn,
+                lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp)
             for i in range(7):
-                p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, 
-                                        targetPosition=joint_poses[i], 
-                                        maxVelocity=2.0, force=500)
+                p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=joints[i], maxVelocity=2.0, force=500)
             
             self.step_simulation_with_callback()
-            
             if time.time() - start_time > timeout:
-                print("移动超时，强制中断")
+                print("移动超时")
                 break
 
     def move_arm_exact(self, target_pos, target_orn=None, steps=80):
         if target_orn is None:
             target_orn = p.getQuaternionFromEuler([math.pi, 0, math.pi/2])
         for _ in range(steps):
-            joint_poses = p.calculateInverseKinematics(
-                self.robot_id, self.eef_id, target_pos, target_orn,
-                lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp
-            )
+            joints = p.calculateInverseKinematics(self.robot_id, self.eef_id, target_pos, target_orn,
+                lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp)
             for i in range(7):
-                p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=joint_poses[i], maxVelocity=2.0, force=500)
-            
-            self.step_simulation_with_callback() 
+                p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=joints[i], maxVelocity=2.0, force=500)
+            self.step_simulation_with_callback()
 
     def execute_pick_and_place(self, cube_id, tray_id):
         p.changeDynamics(cube_id, -1, lateralFriction=10.0, mass=0.05)
         cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
         tray_pos, _ = p.getBasePositionAndOrientation(tray_id)
         
-        hover_z = 0.3 
-        pre_grasp = [cube_pos[0], cube_pos[1], cube_pos[2] + hover_z]
-        grasp_pos = [cube_pos[0], cube_pos[1], 0.045] 
-        drop_pos = [tray_pos[0], tray_pos[1], tray_pos[2] + hover_z]
-        drop_low = [tray_pos[0], tray_pos[1], tray_pos[2] + 0.15] 
+        pre_grasp = [cube_pos[0], cube_pos[1], cube_pos[2] + 0.3]
+        grasp_pos = [cube_pos[0], cube_pos[1], 0.045]
+        drop_pos = [tray_pos[0], tray_pos[1], tray_pos[2] + 0.3]
+        drop_low = [tray_pos[0], tray_pos[1], tray_pos[2] + 0.15]
         
-        # 【关键修复】将目标方块加入忽略列表，避免被识别为障碍物
         self.set_ignored_object(cube_id)
         
-        print(">>> 1. 智能移动：接近方块上方")
-        self.move_gripper(open_state=True)
-        self.move_arm_smart(pre_grasp, timeout=15.0) 
-
-        print(">>> 2. 精准下降")
-        self.move_arm_exact(grasp_pos, steps=200)
+        # 定义抓取后的回调 - 记录被抓物品体积
+        def grasp_and_record():
+            self.move_gripper(False)
+            for _ in range(100):
+                self.step_simulation_with_callback()
+            # 抓取成功后，记录物品体积用于避障
+            self.set_grabbed_object(cube_id)
         
-        for _ in range(40): self.step_simulation_with_callback()
-
-        print(">>> 3. 闭合夹爪")
-        self.move_gripper(open_state=False)
-        for _ in range(100): self.step_simulation_with_callback()
-
-        print(">>> 4. 抬起 (视觉避障开启)")
-        self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)
-
-        print(">>> 5. 搬运至终点 (视觉避障开启)")
-        self.move_arm_smart(drop_pos, timeout=30.0, debug=True)
-
-        print(">>> 6. 放下")
-        self.move_arm_exact(drop_low, steps=300)
+        # 定义放下后的回调 - 清除物品体积信息
+        def release_and_clear():
+            self.move_arm_exact(drop_low, steps=300)
+            self.move_gripper(True)
+            # 放下后清除物品体积信息
+            self.clear_grabbed_object()
         
-        for _ in range(50): self.step_simulation_with_callback()
-        self.move_gripper(open_state=True)
+        steps = [("1. 接近方块上方", lambda: (self.move_gripper(True), self.move_arm_smart(pre_grasp, timeout=15.0))),
+                 ("2. 精准下降", lambda: self.move_arm_exact(grasp_pos, steps=200)),
+                 ("3. 闭合夹爪并记录物品体积", grasp_and_record),
+                 ("4. 抬起(避障考虑物品体积)", lambda: self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)),
+                 ("5. 搬运至终点(避障考虑物品体积)", lambda: self.move_arm_smart(drop_pos, timeout=30.0, debug=True)),
+                 ("6. 放下并清除体积信息", release_and_clear)]
+        
+        for name, action in steps:
+            print(f">>> {name}")
+            action()
         print("任务完成")
