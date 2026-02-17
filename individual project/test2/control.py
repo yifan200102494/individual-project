@@ -26,17 +26,18 @@ class CameraSystem:
     
     def _init_camera(self, eye_pos, target_pos, fov, aspect):
         
-        view_mat = p.computeViewMatrix(eye_pos, target_pos, [0, 0, 1])
-        proj_mat = p.computeProjectionMatrixFOV(fov, aspect, 0.1, 2.0)
+        view_mat = p.computeViewMatrix(eye_pos, target_pos, [0, 0, 1])  #相机在哪里
+        proj_mat = p.computeProjectionMatrixFOV(fov, aspect, 0.1, 2.0)  #怎么成像
         view_np = np.array(view_mat).reshape(4, 4).T
         proj_np = np.array(proj_mat).reshape(4, 4).T
-        return view_mat, proj_mat, np.linalg.pinv(proj_np @ view_np)
+        return view_mat, proj_mat, np.linalg.pinv(proj_np @ view_np)  #从图片反推3D位置 相等于inv_pv
+       
 
     def _scan_camera(self, width, height, view_mat, proj_mat, inv_pv, step=4, z_thresh=0.08):
         
         img = p.getCameraImage(width, height, view_mat, proj_mat, renderer=p.ER_TINY_RENDERER)
-        depth = np.reshape(img[3], (height, width))
-        seg = np.reshape(img[4], (height, width))
+        depth = np.reshape(img[3], (height, width))  #灰度图，代表该物体离摄像机的远近
+        seg = np.reshape(img[4], (height, width))  #分类图，用于识别物体
         
         # 过滤无效物体
         mask = (seg != self.robot_id) & (seg != self.tray_id) & (seg != self.plane_id) & (depth < 0.95)
@@ -50,12 +51,12 @@ class CameraSystem:
         rows, cols = rows[::step], cols[::step]
         depths = depth[rows, cols]
         
-        x_ndc = (2 * cols / width) - 1
-        y_ndc = 1 - (2 * rows / height)
+        x_ndc = (2 * cols / width) - 1  #统一坐标系 NDC范围是-1，1
+        y_ndc = 1 - (2 * rows / height)  #上下翻转，计算机屏幕的坐标原点在左上角，y轴向下，3D世界坐标原点在屏幕中心，Y轴向上
         z_ndc = 2 * depths - 1
         
-        world = np.dot(inv_pv, np.vstack([x_ndc, y_ndc, z_ndc, np.ones_like(x_ndc)]))
-        points = (world[:3] / world[3]).T
+        world = np.dot(inv_pv, np.vstack([x_ndc, y_ndc, z_ndc, np.ones_like(x_ndc)]))  #逆向矩阵乘法 np.vstack构建齐次坐标，np.ones_like创建一个和 x_ndc 长度一样数组，里面全是 1.0， w=1：代表这是一个点 
+        points = (world[:3] / world[3]).T   #透视除法，从4D还原成3D
         return points[points[:, 2] > z_thresh]
 
     def scan_obstacle_volume(self):
@@ -65,7 +66,7 @@ class CameraSystem:
         if points is None or len(points) < 5:
             return None
         
-        min_bound, max_bound = np.min(points, axis=0), np.max(points, axis=0)
+        min_bound, max_bound = np.min(points, axis=0), np.max(points, axis=0)  #输出一个立方体盒子和中心点给后面预测层使用
         center = np.mean(points, axis=0)
         self.draw_debug_box(min_bound, max_bound)
         self.obstacle_predictor.update(center)
@@ -114,17 +115,11 @@ class CameraSystem:
             p.addUserDebugLine(corners[s], corners[e], [0,1,0], lineWidth=2, lifeTime=0.2)
         
         cz = self.obstacle_height_info.get("clearance_height", 0)
-        # if cz > 0.1:
-        #     cc = [[mn[0]-0.1,mn[1]-0.1,cz], [mx[0]+0.1,mn[1]-0.1,cz], 
-        #           [mn[0]-0.1,mx[1]+0.1,cz], [mx[0]+0.1,mx[1]+0.1,cz]]
-        #     for s, e in [(0,1),(1,3),(3,2),(2,0)]:
-        #         p.addUserDebugLine(cc[s], cc[e], [0,0.5,1], lineWidth=3, lifeTime=0.2)
-        #     p.addUserDebugText(f"Safe: {cz:.2f}m", [(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,cz+0.02], 
-        #                       [0,0.5,1], textSize=1.2, lifeTime=0.2)
-
+       
 
 class RobotController:
     def __init__(self, robot_id, tray_id):
+        #机械臂初始设置
         self.robot_id, self.eef_id = robot_id, 11
         self.critical_joints, self.finger_indices = [11, 6, 4], [9, 10]
         self.gripper_open_pos, self.gripper_closed_pos = 0.05, 0.03
@@ -241,7 +236,7 @@ class RobotController:
             if step_counter % 24 == 0:
                 obs_aabb = self.vision_system.scan_obstacle_volume()
             if step_counter % 24 == 0:
-                h_info = self.vision_system.scan_obstacle_height_from_side()
+                h_info = self.vision_system.scan_obstacle_height_from_side()      #侧摄像头高度更新
                 self.avoider.set_obstacle_height_info(h_info)
                 if debug and h_info.get("confidence", 0) > 0.3:
                     print(f"  [侧视] 高度:{h_info.get('max_height',0):.3f}m, 安全:{h_info.get('clearance_height',0):.3f}m")
@@ -255,7 +250,7 @@ class RobotController:
             self.avoider.d_th2 = {"emergency_avoid": 0.55, "preemptive_avoid": 0.48}.get(rec, 0.40)
 
             # 传递运动信息
-            trend = self.vision_system.get_motion_trend()
+            trend = self.vision_system.get_motion_trend()                         #主摄像头更新位置趋势
             self.avoider.set_obstacle_motion(trend.get("velocity"), trend.get("is_moving", False), trend.get("direction"))
             
             # 传递被抓物品的碰撞边界扩展量
@@ -263,7 +258,7 @@ class RobotController:
             self.avoider.set_grabbed_object_bounds(bounds["radius_extend"], bounds["bottom_extend"])
             
             # 计算下一步
-            virtual_next, status = self.avoider.compute_modified_step(current_eef_pos, target_pos, eff_obs_pos)
+            virtual_next, status = self.avoider.compute_modified_step(current_eef_pos, target_pos, eff_obs_pos)            #结合主和侧摄像头计算下一步
             
             # 调试输出
             if debug and (status != last_status or pred_info.get("direction") != (last_pred_info or {}).get("direction")):
@@ -277,7 +272,7 @@ class RobotController:
                 if debug: print(f"  [调试] 到达目标！")
                 break
             
-            # 执行运动
+            # 执行运动    IK
             joints = p.calculateInverseKinematics(self.robot_id, self.eef_id, virtual_next, target_orn,
                 lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp)
             for i in range(7):
@@ -288,6 +283,7 @@ class RobotController:
                 print("移动超时")
                 break
 
+        #精确移动
     def move_arm_exact(self, target_pos, target_orn=None, steps=80):
         if target_orn is None:
             target_orn = p.getQuaternionFromEuler([math.pi, 0, math.pi/2])

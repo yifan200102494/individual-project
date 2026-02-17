@@ -82,29 +82,29 @@ class VisualAvoidanceSystem:
     def compute_modified_step(self, current_pos, target_pos, obstacle_pos):
         curr, targ, obs = np.array(current_pos), np.array(target_pos), np.array(obstacle_pos)
         
-        v_full = targ - curr
-        dist_targ = np.linalg.norm(v_full)
-        c_vec = obs - curr
-        dist_obs_raw = np.linalg.norm(c_vec)
+        v_full = targ - curr                   # 目标方向向量（我想去哪）
+        dist_targ = np.linalg.norm(v_full)     # 离目标还有多远
+        c_vec = obs - curr                     # 障碍物方向向量（障碍物在哪）
+        dist_obs_raw = np.linalg.norm(c_vec)  # 离障碍物实际距离
         
-        # === 考虑被抓物品体积的距离修正 ===
+        # === 考虑被抓物品体积的距离修正 防止手中物品碰撞===
         # 有效距离 = 实际距离 - 物品水平半径扩展
         dist_obs = max(dist_obs_raw - self.grabbed_radius_extend, 0.01)
         
-        if dist_targ < 0.01: return current_pos, "ARRIVED"
-        v_dir = v_full / dist_targ
+        if dist_targ < 0.01: return current_pos, "ARRIVED"   
+        v_dir = v_full / dist_targ                               
         c_hat = c_vec / dist_obs_raw if dist_obs_raw > 0.001 else np.array([1, 0, 0])
         
-        # 基础状态检测
-        if dist_targ < 0.02: return current_pos, "ARRIVED"
-        if dist_targ < 0.18: return (curr + v_dir * 0.04).tolist(), "DOCKING"
+        # 基础状态检测 快速筛查
+        if dist_targ < 0.02: return current_pos, "ARRIVED"                                        # 到终点了，不动
+        if dist_targ < 0.18: return (curr + v_dir * 0.04).tolist(), "DOCKING"                      # 快到了，慢慢挪
         # 考虑物品体积后的安全距离判断
-        safe_clear_dist = 0.30 + self.grabbed_radius_extend
-        if dist_obs > safe_clear_dist: return (curr + v_dir * 0.05).tolist(), "CLEAR_PATH"
+        safe_clear_dist = 0.60 + self.grabbed_radius_extend
+        if dist_obs > safe_clear_dist: return (curr + v_dir * 0.05).tolist(), "CLEAR_PATH"           # 离障碍物八丈远，直走
         
-        # === 高度计算 - 考虑物品底部扩展 ===
-        eff_clear = self._get_clearance_height(obs[2])
-        # 末端执行器高度减去物品底部偏移 = 物品最低点的有效高度
+        # === 高度计算 - 考虑物品底部扩展 决定了是“从上面跨过去”还是“在旁边绕过去”===
+        eff_clear = self._get_clearance_height(obs[2])                            # 获取障碍物顶端的高度（加上安全余量）
+        # 末端执行器高度 - 物品底部偏移 = 物品最低点的有效高度
         effective_eef_z = curr[2] - self.grabbed_bottom_extend
         h_above_clear = effective_eef_z - eff_clear  # 物品底部距安全高度的余量
         h_above_obs = effective_eef_z - obs[2]       # 物品底部距障碍物的余量
@@ -135,10 +135,13 @@ class VisualAvoidanceSystem:
         if np.dot(v_dir, c_hat) < -0.1:
             return (curr + v_dir * 0.05).tolist(), "LEAVING"
         
-        # 动态安全距离 - 考虑被抓物品体积
-        eff_safe = self.d_th2 + self.grabbed_radius_extend  # 加上物品水平半径
+
+
+        
+        # 动态安全距离 - 考虑被抓物品体积            势场法
+        eff_safe = self.d_th2 + self.grabbed_radius_extend  # 加上物品水平半径  基础警戒圈扩大
         if self.obstacle_is_moving and self.obstacle_direction == 'approaching':
-            eff_safe += min(np.linalg.norm(self.obstacle_velocity) * 50, 0.15)
+            eff_safe += min(np.linalg.norm(self.obstacle_velocity) * 50, 0.15)         # 预测层说它在靠近，警戒圈瞬间扩大！
         elif self.obstacle_is_moving and self.obstacle_direction == 'leaving':
             eff_safe *= 0.85
         
@@ -146,7 +149,7 @@ class VisualAvoidanceSystem:
             return (curr + v_dir * 0.05).tolist(), "NORMAL"
         
         # 避障计算
-        risk = np.clip((eff_safe - dist_obs) / (eff_safe - self.d_th1), 0, 1)
+        risk = np.clip((eff_safe - dist_obs) / (eff_safe - self.d_th1), 0, 1)       # 风险从 0.0 (安全) 到 1.0 (即将碰撞)
         if self.obstacle_is_moving and self.obstacle_direction == 'approaching':
             risk = min(risk * 1.3, 1.0)
         
@@ -160,14 +163,14 @@ class VisualAvoidanceSystem:
         
         up = np.array([0.0, 0.0, 1.0])
         if np.linalg.norm(v_perp) < 0.1:
-            v_perp = up * 2.0 * up_s
+            v_perp = up * 2.0 * up_s              
         else:
-            v_perp += up * risk * 2.0 * up_s
+            v_perp += up * risk * 2.0 * up_s         # 如果风险大，或者还没完全高过障碍物，就拼命给向上的力
         
         # 水平斥力
         c_h = np.array([c_hat[0], c_hat[1], 0])
         c_h = c_h / np.linalg.norm(c_h) if np.linalg.norm(c_h) > 0.01 else np.array([1, 0, 0])
-        repel = -risk * c_h * 1.5 + self._compute_escape_direction(v_dir, risk)
+        repel = -risk * c_h * 1.5 + self._compute_escape_direction(v_dir, risk)              # c_h 是障碍物方向，乘以 -1 就是反方向（斥力）
         if v_perp[2] > 0.5: repel *= 0.3
         
         v_mod = v_perp + repel

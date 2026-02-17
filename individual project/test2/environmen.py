@@ -10,7 +10,7 @@ def setup_environment():
     p.setGravity(0, 0, -9.8)
     p.loadURDF("plane.urdf")
     
-    # 加载机器人
+    # 加载机器臂
     robotId = p.loadURDF("franka_panda/panda.urdf", [0, 0, 0], useFixedBase=True)
 
     trayPos = [0.5, 0.4, 0] 

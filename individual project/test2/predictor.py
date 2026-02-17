@@ -7,7 +7,7 @@ class ObstaclePredictor:
         self.history_size = history_size
         self.prediction_horizon = prediction_horizon
         self.position_history = deque(maxlen=history_size)
-        
+        #卡尔曼初始状态
         self.state = None
         self.covariance = None
         self.initialized = False
@@ -24,10 +24,10 @@ class ObstaclePredictor:
        
         dt = self.dt
         self.F = np.array([[1,0,0,dt,0,0], [0,1,0,0,dt,0], [0,0,1,0,0,dt],
-                           [0,0,0,1,0,0], [0,0,0,0,1,0], [0,0,0,0,0,1]])
-        self.H = np.array([[1,0,0,0,0,0], [0,1,0,0,0,0], [0,0,1,0,0,0]])
-        self.Q = np.diag([0.001, 0.001, 0.001, 0.01, 0.01, 0.01])
-        self.R = np.diag([0.01, 0.01, 0.01])
+                           [0,0,0,1,0,0], [0,0,0,0,1,0], [0,0,0,0,0,1]])  #状态转移矩阵：如果没有外力干扰，下一帧物体会在哪里，下一秒的 x = 当前 x + (vx * dt)
+        self.H = np.array([[1,0,0,0,0,0], [0,1,0,0,0,0], [0,0,1,0,0,0]])  #观测矩阵，告诉滤波器后面三个量看不到得靠猜
+        self.Q = np.diag([0.001, 0.001, 0.001, 0.01, 0.01, 0.01])    #过程噪声，物体大体是匀速的，但允许它有一些变速
+        self.R = np.diag([0.01, 0.01, 0.01])                         #测量噪声，摄像头还算准，但也有噪点，别全信
         
     def update(self, observed_position, timestamp=None):
         
@@ -43,23 +43,24 @@ class ObstaclePredictor:
             return
         
         # 卡尔曼滤波
-        state_pred = self.F @ self.state
-        cov_pred = self.F @ self.covariance @ self.F.T + self.Q
+        state_pred = self.F @ self.state   #物理预测，基于上一秒的位置和速度self.F，算出这一秒“应该”在哪                                                                               1. 算出预测的位置
+        cov_pred = self.F @ self.covariance @ self.F.T + self.Q  #不确定性预测  cov_pred：预测的误差范围，告诉系统：“根据刚才的推算，我现在对物体位置的判断大概有正负多少厘米的误差”      2. 算出预测的误差
         
-        y = obs - self.H @ state_pred
-        S = self.H @ cov_pred @ self.H.T + self.R
-        K = cov_pred @ self.H.T @ np.linalg.inv(S)
+        y = obs - self.H @ state_pred  #差距  看一眼OBS感知层传来的数据，self.H @ state_pred把速度向量过滤掉只保留位置向量                                                               3. 实际与预测的差值
+        S = self.H @ cov_pred @ self.H.T + self.R  #计算总方差  总的不确定性                                                                                                         4. 预测误差 + 噪音	
+
+        K = cov_pred @ self.H.T @ np.linalg.inv(S)  #权重  相当于cov_pred/S                                                                                                          5. 预测误差 / （预测误差+噪音）
         
-        self.state = state_pred + K @ y
+        self.state = state_pred + K @ y  #状态修正
         self.covariance = (np.eye(6) - K @ self.H) @ cov_pred
         
         # 更新速度
         self.velocity_estimate = self.state[3:6]
         self.speed_magnitude = np.linalg.norm(self.velocity_estimate)
-        self.is_moving = self.speed_magnitude > 0.0005
+        self.is_moving = self.speed_magnitude > 0.0005  #判断运动状态
         
         vx = self.velocity_estimate[0]
-        self.movement_direction = 'approaching' if vx < -0.0003 else ('leaving' if vx > 0.0003 else 'stationary')
+        self.movement_direction = 'approaching' if vx < -0.0003 else ('leaving' if vx > 0.0003 else 'stationary')   #利用刚刚算出的新鲜速度，判断物体是在“靠近”还是“远离”
             
     def predict_position(self, steps_ahead=None):
         
@@ -68,7 +69,7 @@ class ObstaclePredictor:
         if steps_ahead is None:
             steps_ahead = int(self.prediction_horizon / self.dt)
         
-        pred = self.state[:3] + self.state[3:6] * steps_ahead * self.dt
+        pred = self.state[:3] + self.state[3:6] * steps_ahead * self.dt   #线性外推，知道了现在的精确速度 self.state[3:6]，直接乘以未来时间 steps_ahead，就能算出未来它会在哪
         
         # 置信度计算
         data_conf = min(len(self.position_history) / self.history_size, 1.0)
@@ -97,7 +98,7 @@ class ObstaclePredictor:
         
         # 动态预测步数
         base = int(self.prediction_horizon / self.dt)
-        mult = {"approaching": 1.5, "leaving": 0.5}.get(self.movement_direction, 1.0)
+        mult = {"approaching": 1.5, "leaving": 0.5}.get(self.movement_direction, 1.0)   #读取状态 如果障碍物冲着机器人飞过来（速度为负），系统会把预测时间乘以 1.5 倍。如果障碍物正在远离，系统把预测时间乘以 0.5
         steps = int(base * lead_time_factor * mult)
         info["strategy"] = {"approaching": "aggressive", "leaving": "relaxed"}.get(self.movement_direction, "normal")
         
