@@ -1,3 +1,5 @@
+import sys
+import os
 import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from avoidance import VisualAvoidanceSystem
@@ -5,7 +7,7 @@ from avoidance import VisualAvoidanceSystem
 def run_intent_test():
     # 初始化，基础警戒距离 0.45m
     avoidance = VisualAvoidanceSystem(safe_distance=0.45)
-    curr, targ, obs = [0, 0, 0], [0, 0, 1], [0.4, 0, 0] # 障碍物在 0.55m 处
+    curr, targ, obs = [0, 0, 0], [1, 0, 0], [0.55, 0, 0] # 障碍物在 0.55m 处
     
     print("--- Intent recognition redundancy test ---")
     

@@ -1,5 +1,7 @@
 import time
 import numpy as np
+import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from predictor import ObstaclePredictor
 from avoidance import VisualAvoidanceSystem
@@ -8,7 +10,7 @@ def run_benchmark():
     predictor = ObstaclePredictor()
     avoidance = VisualAvoidanceSystem()
     
-    print("--- 实时性能基准测试 (Time Budget: 4.16ms) ---")
+    print("Real-time performance benchmark testing")
     
     # 1. 测试预测模块 (Kalman Filter)
     start = time.perf_counter()
