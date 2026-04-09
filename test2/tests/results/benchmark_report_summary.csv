@@ -1,0 +1,6 @@
+gap_width_m,n_trials,success_rate_pct,mean_duration_sec,std_duration_sec,mean_min_clearance_m,std_min_clearance_m,mean_total_collision_frames,mean_max_consecutive_collision_frames,mean_final_xy_error_m,std_final_xy_error_m,mean_final_cube_z_m,failure_breakdown
+0.4,5,100.0,20.313,0.093,0.0761,0.0004,0.0,0.0,0.0243,0.0112,0.0719,Success:5
+0.35,5,100.0,20.575,0.183,0.09,0.004,0.0,0.0,0.0199,0.0101,0.0888,Success:5
+0.3,5,100.0,20.455,0.107,0.065,0.0041,0.0,0.0,0.0214,0.0114,0.079,Success:5
+0.25,5,100.0,20.424,0.087,0.0479,0.0032,0.0,0.0,0.0218,0.0143,0.0807,Success:5
+0.2,5,100.0,19.498,0.447,0.0276,0.0053,0.0,0.0,0.0239,0.0061,0.0761,Success:5
