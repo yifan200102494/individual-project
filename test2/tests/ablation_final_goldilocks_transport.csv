@@ -1,0 +1,7 @@
+Speed,Mode,Success_Rate,Avg_Max_Accel,Avg_Collision_Frames,Primary_Failure
+0.003,proactive,43.3,17.06,14.0,
+0.003,reactive,86.7,9.57,4.1,
+0.007,proactive,46.7,16.7,14.67,
+0.007,reactive,76.7,10.08,4.03,
+0.017,proactive,53.3,15.51,23.2,
+0.017,reactive,83.3,9.87,6.27,

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # 读取你的最终黄金数据
-df = pd.read_csv('ablation_final_goldilocks.csv')
+df = pd.read_csv('ablation_final_goldilocks_1.csv')
 
 plt.style.use('seaborn-v0_8-whitegrid')
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)

@@ -197,7 +197,54 @@ class RobotController:
         for i in self.finger_indices:
             p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=pos, force=500)
         for _ in range(20):
-            self.step_simulation_with_callback() 
+            self.step_simulation_with_callback()
+
+    @staticmethod
+    def _point_to_aabb_xy_dist(target_xy, obs_aabb):
+        """点到 AABB 在 XY 平面上的最近距离。障碍物是长条，用 center 会低估侵入风险。"""
+        mn, mx = obs_aabb["min"], obs_aabb["max"]
+        dx = max(mn[0] - target_xy[0], 0.0, target_xy[0] - mx[0])
+        dy = max(mn[1] - target_xy[1], 0.0, target_xy[1] - mx[1])
+        return math.sqrt(dx * dx + dy * dy)
+
+    def _wait_for_safe_path(self, target_xy, safety_radius=0.22, max_wait=8.0, debug=True):
+        """下降/放下前确保路径安全：障碍物 AABB 投影侵入下降柱时先抬升避障，再等待其移开。"""
+        start = time.time()
+        step_counter, obs_aabb, retreated = 0, None, False
+
+        while time.time() - start < max_wait:
+            if step_counter % 24 == 0:
+                obs_aabb = self.vision_system.scan_obstacle_volume()
+                h_info = self.vision_system.scan_obstacle_height_from_side()
+                self.avoider.set_obstacle_height_info(h_info)
+            step_counter += 1
+
+            if obs_aabb is None:
+                if debug: print("  [路径检查] 无障碍，路径安全")
+                return True
+
+            h_dist = self._point_to_aabb_xy_dist(target_xy, obs_aabb)
+            bounds = self.get_effective_collision_bounds()
+            eff_radius = safety_radius + bounds["radius_extend"]
+
+            if h_dist > eff_radius:
+                if debug: print(f"  [路径检查] 障碍 AABB 离路径 {h_dist:.3f}m > {eff_radius:.3f}m，安全")
+                return True
+
+            # 路径被占用：先主动抬升到障碍上方，再等待其移开
+            if not retreated:
+                cur = self.get_current_eef_pos()
+                safe_z = max(cur[2], float(obs_aabb["max"][2]) + 0.25)
+                if debug: print(f"  [路径检查] 障碍 AABB 入侵(h={h_dist:.3f}m<{eff_radius:.3f}m)，主动抬升避障到 z={safe_z:.3f}")
+                self.move_arm_smart([cur[0], cur[1], safe_z], timeout=4.0, debug=False)
+                retreated = True
+            else:
+                if debug and step_counter % 60 == 0:
+                    print(f"  [路径检查] 已避让，等待障碍物移开 (h={h_dist:.3f}m)...")
+                self.step_simulation_with_callback()
+
+        if debug: print("  [路径检查] 超时，强制继续")
+        return False
 
     def _get_effective_obstacle_pos(self, obs_aabb, current_eef_pos):
         
@@ -285,33 +332,74 @@ class RobotController:
 
         #精确移动
     #精确移动（已加入笛卡尔空间直线插补，确保走绝对直线）
-    def move_arm_exact(self, target_pos, target_orn=None, steps=80):
+    def move_arm_exact(self, target_pos, target_orn=None, steps=80, avoid=False, safety_radius=0.22, debug=False):
         if target_orn is None:
             target_orn = p.getQuaternionFromEuler([math.pi, 0, math.pi/2])
-            
-        # 1. 获取运动开始前的当前末端位置
+
         current_pos = self.get_current_eef_pos()
-        
-        # 2. 计算 X, Y, Z 三个方向上每一步的微小位移量
         dx = (target_pos[0] - current_pos[0]) / steps
         dy = (target_pos[1] - current_pos[1]) / steps
         dz = (target_pos[2] - current_pos[2]) / steps
-        
+
+        step_counter, obs_aabb = 0, None
+
         for step in range(steps):
-            # 3. 计算当前的中间路点 (Waypoint)
+            # 可选：下降过程中持续监测障碍物，若突入路径则暂停等待
+            if avoid:
+                if step_counter % 12 == 0:
+                    obs_aabb = self.vision_system.scan_obstacle_volume()
+                step_counter += 1
+
+                if obs_aabb is not None:
+                    target_xy = (target_pos[0], target_pos[1])
+                    h_dist = self._point_to_aabb_xy_dist(target_xy, obs_aabb)
+                    bounds = self.get_effective_collision_bounds()
+                    eff_radius = safety_radius + bounds["radius_extend"]
+
+                    if h_dist < eff_radius:
+                        if debug: print(f"  [精准移动-避障] 障碍 AABB 入侵(h={h_dist:.3f}m)，暂停直到清空")
+                        pause_start = time.time()
+                        while time.time() - pause_start < 3.0:
+                            self.step_simulation_with_callback()
+                            obs_aabb = self.vision_system.scan_obstacle_volume()
+                            if obs_aabb is None:
+                                break
+                            nh = self._point_to_aabb_xy_dist(target_xy, obs_aabb)
+                            if nh > eff_radius:
+                                break
+                        if debug: print(f"  [精准移动-避障] 路径恢复，继续下降")
+
             waypoint = [
                 current_pos[0] + dx * (step + 1),
                 current_pos[1] + dy * (step + 1),
                 current_pos[2] + dz * (step + 1)
             ]
-            
-            # 4. 让 IK 引擎去解这个微小的中间目标
+
             joints = p.calculateInverseKinematics(self.robot_id, self.eef_id, waypoint, target_orn,
                 lowerLimits=self.ll, upperLimits=self.ul, jointRanges=self.jr, restPoses=self.rp)
-                
+
             for i in range(7):
                 p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL, targetPosition=joints[i], maxVelocity=2.0, force=500)
             self.step_simulation_with_callback()
+
+    def return_to_home(self, settle_steps=480, debug=True):
+        """放下物品后回到初始姿态（关节空间），并在途中维持障碍物更新。"""
+        if debug: print("  [回原位] 驱动关节回到 restPoses ...")
+        for i in range(7):
+            p.setJointMotorControl2(self.robot_id, i, p.POSITION_CONTROL,
+                                    targetPosition=self.rp[i], maxVelocity=2.0, force=500)
+        # 等待关节收敛（动态障碍物继续更新，避免卡顿突然撞上来）
+        start = time.time()
+        while time.time() - start < 5.0:
+            cur = [p.getJointState(self.robot_id, i)[0] for i in range(7)]
+            err = max(abs(cur[i] - self.rp[i]) for i in range(7))
+            self.step_simulation_with_callback()
+            if err < 0.02:
+                break
+        # 额外稳定帧
+        for _ in range(settle_steps // 10):
+            self.step_simulation_with_callback()
+        if debug: print("  [回原位] 已回到初始姿态")
 
     def execute_pick_and_place(self, cube_id, tray_id):
         # 增加旋转摩擦和滚动摩擦，防止方块在夹爪中打滑
@@ -329,21 +417,64 @@ class RobotController:
         def precise_descent():
             # 下降前重新获取最新位置，修正由于空气动力或机械臂靠近带来的微小位移
             current_cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
-            # Z轴从 0.045 降低到 0.035，让夹爪深入方块两侧
-            new_grasp_pos = [current_cube_pos[0], current_cube_pos[1], 0.035] 
-            self.move_arm_exact(new_grasp_pos, steps=200)
+            # 下降前确保路径安全（若有障碍先主动避障再回到上方）
+            self._wait_for_safe_path([current_cube_pos[0], current_cube_pos[1]], safety_radius=0.22, debug=True)
+            # 避障后重新获取方块位置，防止方块被碰移位
+            current_cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
+            # 避障后机械臂可能被抬高了，需要先回到抓取上方，再进行精准下降
+            pre_grasp_refreshed = [current_cube_pos[0], current_cube_pos[1], current_cube_pos[2] + 0.3]
+            # 这段没有精度要求，用较少步数以加快速度
+            self.move_arm_exact(pre_grasp_refreshed, steps=40, avoid=True, debug=True)
+            # Z轴从 0.045 降低到 0.035，让夹爪深入方块两侧 —— 只有最后插入段需要高精度
+            mid_grasp = [current_cube_pos[0], current_cube_pos[1], current_cube_pos[2] + 0.08]
+            self.move_arm_exact(mid_grasp, steps=50, avoid=True, debug=True)
+            new_grasp_pos = [current_cube_pos[0], current_cube_pos[1], 0.035]
+            self.move_arm_exact(new_grasp_pos, steps=80, avoid=True, debug=True)
 
-        # 定义抓取后的回调 - 记录被抓物品体积
+        def _check_grasp_contact():
+            """返回夹爪有效接触的手指数 (0/1/2)。"""
+            contacts = p.getContactPoints(bodyA=self.robot_id, bodyB=cube_id)
+            # contact tuple: [3]=linkA (robot 侧的 link index)
+            fingers_touched = {c[3] for c in contacts if c[3] in self.finger_indices}
+            return len(fingers_touched)
+
+        # 定义抓取后的回调 - 记录被抓物品体积，并验证是否真的夹住
         def grasp_and_record():
-            self.move_gripper(False)
-            for _ in range(100): # 给予充分的物理结算时间来稳定夹取
-                self.step_simulation_with_callback()
-            # 抓取成功后，记录物品体积用于避障
-            self.set_grabbed_object(cube_id)
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                self.move_gripper(False)
+                for _ in range(100): # 物理结算
+                    self.step_simulation_with_callback()
+
+                n_fingers = _check_grasp_contact()
+                if n_fingers >= 2:
+                    print(f"  [抓取验证] 双指接触方块 ✓")
+                    self.set_grabbed_object(cube_id)
+                    return
+
+                if attempt >= max_retries:
+                    print(f"  [抓取验证] 重试 {max_retries} 次后仍仅 {n_fingers}/2 指接触，放弃 (后续步骤可能失败)")
+                    # 即便失败也记录体积，避免后续 None 错误
+                    self.set_grabbed_object(cube_id)
+                    return
+
+                print(f"  [抓取验证] 仅 {n_fingers}/2 指接触，重试 #{attempt + 1}")
+                # 松开、抬起、重新对齐下降
+                self.move_gripper(True)
+                current_cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
+                lift_pos = [current_cube_pos[0], current_cube_pos[1], current_cube_pos[2] + 0.15]
+                self.move_arm_exact(lift_pos, steps=40)
+                redescend_pos = [current_cube_pos[0], current_cube_pos[1], 0.035]
+                self.move_arm_exact(redescend_pos, steps=80)
         
         # 定义放下后的回调 - 清除物品体积信息
         def release_and_clear():
-            self.move_arm_exact(drop_low, steps=300)
+            # 放下前确保下方路径安全
+            self._wait_for_safe_path([drop_low[0], drop_low[1]], safety_radius=0.22, debug=True)
+            # 避障可能把末端抬高或挪走了，先用 smart 回到放下点上方
+            self.move_arm_smart(drop_pos, timeout=10.0, debug=True)
+            # 再精准下降到放下高度，期间持续监测障碍 —— 放下不需要超高精度
+            self.move_arm_exact(drop_low, steps=100, avoid=True, debug=True)
             self.move_gripper(True)
             # 放下后清除物品体积信息
             self.clear_grabbed_object()
@@ -353,7 +484,8 @@ class RobotController:
                  ("3. 闭合夹爪并记录物品体积", grasp_and_record),
                  ("4. 抬起(避障考虑物品体积)", lambda: self.move_arm_smart(pre_grasp, timeout=10.0, debug=True)),
                  ("5. 搬运至终点(避障考虑物品体积)", lambda: self.move_arm_smart(drop_pos, timeout=30.0, debug=True)),
-                 ("6. 放下并清除体积信息", release_and_clear)]
+                 ("6. 放下并清除体积信息", release_and_clear),
+                 ("7. 回到初始姿态", self.return_to_home)]
         
         for name, action in steps:
             print(f">>> {name}")

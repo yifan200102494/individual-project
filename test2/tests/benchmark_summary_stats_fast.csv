@@ -1,0 +1,6 @@
+Speed Level,Success Rate,Min Distance / m,Dist Std Dev,Collisions
+1 - Slow,100.0,0.173,0.018379,0.0
+2 - Medium,96.7,0.1734,0.029254,1.13
+3 - Fast,93.3,0.1723,0.038585,1.0
+4 - Extreme,86.7,0.1764,0.03707,2.37
+5 - Insane,86.7,0.1549,0.030929,2.17

@@ -430,8 +430,8 @@ def main():
     summary_rows = aggregate_results(raw_rows)
 
     out_dir = os.path.dirname(__file__)
-    raw_path = os.path.join(out_dir, "benchmark_report_raw.csv")
-    summary_path = os.path.join(out_dir, "benchmark_report_summary.csv")
+    raw_path = os.path.join(out_dir, "benchmark_report_raw_1.csv")
+    summary_path = os.path.join(out_dir, "benchmark_report_summary_1.csv")
 
     write_csv(raw_path, raw_rows)
     write_csv(summary_path, summary_rows)

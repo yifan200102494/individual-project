@@ -25,8 +25,12 @@ if __name__ == "__main__":
     # 4. 执行任务
     controller.execute_pick_and_place(cube_id, tray_id)
 
-    # 5. 任务结束后继续维持仿真
-    while True:
+    # 5. 任务结束后维持仿真 3 秒以便观察，然后自动关闭窗口
+    hold_seconds = 3
+    print(f"任务完成，{hold_seconds} 秒后自动关闭仿真窗口...")
+    for _ in range(hold_seconds * 240):
         p.stepSimulation()
         dynamic_obs.update()
         time.sleep(1./240.)
+    p.disconnect()
+    print("仿真窗口已关闭")

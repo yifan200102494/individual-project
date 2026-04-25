@@ -1,8 +1,9 @@
 import numpy as np
+import time
 from collections import deque
 
 class ObstaclePredictor:
-    
+
     def __init__(self, history_size=15, prediction_horizon=0.5):
         self.history_size = history_size
         self.prediction_horizon = prediction_horizon
@@ -11,40 +12,54 @@ class ObstaclePredictor:
         self.state = None
         self.covariance = None
         self.initialized = False
-        self.dt = 1.0 / 240.0
-        
+        # 仿真 tick 时长，用于 predict_position 把 "steps_ahead" 解释为 tick 数
+        self.tick_dt = 1.0 / 240.0
+        # 上一次 update 的墙钟时间（用于构造和真实观测间隔匹配的 F）
+        self.last_update_time = None
+        # 初始默认 dt —— update 时会替换成实际间隔
+        self.dt = self.tick_dt
+
         self.velocity_estimate = np.zeros(3)
         self.speed_magnitude = 0.0
         self.is_moving = False
         self.movement_direction = None
-        
+
         self._init_kalman_params()
-        
+
     def _init_kalman_params(self):
-       
-        dt = self.dt
-        self.F = np.array([[1,0,0,dt,0,0], [0,1,0,0,dt,0], [0,0,1,0,0,dt],
-                           [0,0,0,1,0,0], [0,0,0,0,1,0], [0,0,0,0,0,1]])  #状态转移矩阵：如果没有外力干扰，下一帧物体会在哪里，下一秒的 x = 当前 x + (vx * dt)
-        self.H = np.array([[1,0,0,0,0,0], [0,1,0,0,0,0], [0,0,1,0,0,0]])  #观测矩阵，告诉滤波器后面三个量看不到得靠猜
-        self.Q = np.diag([0.001, 0.001, 0.001, 0.01, 0.01, 0.01])    #过程噪声，物体大体是匀速的，但允许它有一些变速
-        self.R = np.diag([0.01, 0.01, 0.01])                         #测量噪声，摄像头还算准，但也有噪点，别全信
+        # H / Q / R 与 dt 无关，只初始化一次；F 在每次 update 时根据实际 dt 重建
+        self.H = np.array([[1,0,0,0,0,0], [0,1,0,0,0,0], [0,0,1,0,0,0]])  #观测矩阵
+        self.Q = np.diag([0.001, 0.001, 0.001, 0.01, 0.01, 0.01])    #过程噪声
+        self.R = np.diag([0.01, 0.01, 0.01])                         #测量噪声
+
+    def _build_F(self, dt):
+        return np.array([[1,0,0,dt,0,0], [0,1,0,0,dt,0], [0,0,1,0,0,dt],
+                         [0,0,0,1,0,0], [0,0,0,0,1,0], [0,0,0,0,0,1]])
         
     def update(self, observed_position, timestamp=None):
-        
+
         if observed_position is None:
             return
         obs = np.array(observed_position)
+        now = timestamp if timestamp is not None else time.time()
         self.position_history.append(obs.copy())
-        
+
         if not self.initialized:
             self.state = np.concatenate([obs, [0, 0, 0]])
             self.covariance = np.eye(6) * 0.1
+            self.last_update_time = now
             self.initialized = True
             return
-        
+
+        # 用真实观测间隔构造 F，避免 24x 的速度估计偏差
+        actual_dt = max(now - self.last_update_time, 1e-4) if self.last_update_time else self.tick_dt
+        self.last_update_time = now
+        self.dt = actual_dt
+        F = self._build_F(actual_dt)
+
         # 卡尔曼滤波
-        state_pred = self.F @ self.state   #物理预测，基于上一秒的位置和速度self.F，算出这一秒“应该”在哪                                                                               1. 算出预测的位置
-        cov_pred = self.F @ self.covariance @ self.F.T + self.Q  #不确定性预测  cov_pred：预测的误差范围，告诉系统：“根据刚才的推算，我现在对物体位置的判断大概有正负多少厘米的误差”      2. 算出预测的误差
+        state_pred = F @ self.state   #物理预测，基于上一秒的位置和速度，算出这一秒"应该"在哪                                                                               1. 算出预测的位置
+        cov_pred = F @ self.covariance @ F.T + self.Q  #不确定性预测  cov_pred：预测的误差范围                                                                                2. 算出预测的误差
         
         y = obs - self.H @ state_pred  #差距  看一眼OBS感知层传来的数据，self.H @ state_pred把速度向量过滤掉只保留位置向量                                                               3. 实际与预测的差值
         S = self.H @ cov_pred @ self.H.T + self.R  #计算总方差  总的不确定性                                                                                                         4. 预测误差 + 噪音	
@@ -112,28 +127,31 @@ class ObstaclePredictor:
         return eff, info
         
     def should_preemptive_avoid(self, robot_pos, robot_target, safety_margin=0.15):
-        
+
         if not self.initialized or not self.is_moving:
             return False, 0.0, "proceed_normal"
-            
+
         r_pos, r_tgt = np.array(robot_pos), np.array(robot_target)
         r_dir = r_tgt - r_pos
         r_dist = np.linalg.norm(r_dir)
         if r_dist < 0.01:
             return False, 0.0, "at_target"
         r_dir = r_dir / r_dist
-        
+
+        robot_speed = 0.5  # m/s，机械臂有效移动速度保守估计
         max_threat = 0.0
-        for t in range(10, 150, 10):
-            pred, conf = self.predict_position(t)
+        # 前瞻 0.1s ~ 1.0s
+        for t_sec in np.arange(0.1, 1.0, 0.1):
+            steps = max(int(t_sec / self.dt), 1)
+            pred, conf = self.predict_position(steps)
             if not pred:
                 continue
-            r_future = r_pos + r_dir * min(0.05 * t, r_dist)
+            r_future = r_pos + r_dir * min(robot_speed * t_sec, r_dist)
             dist = np.linalg.norm(r_future - np.array(pred))
             if dist < safety_margin:
                 threat = (safety_margin - dist) / safety_margin * conf
                 max_threat = max(max_threat, threat)
-        
+
         if max_threat > 0.7: return True, max_threat, "emergency_avoid"
         if max_threat > 0.4: return True, max_threat, "preemptive_avoid"
         if max_threat > 0.2: return True, max_threat, "cautious_proceed"
@@ -148,10 +166,11 @@ class ObstaclePredictor:
                 "position": self.state[:3].tolist()}
         
     def reset(self):
-        
+
         self.position_history.clear()
         self.state = self.covariance = None
         self.initialized = self.is_moving = False
+        self.last_update_time = None
         self.velocity_estimate = np.zeros(3)
         self.speed_magnitude = 0.0
         self.movement_direction = None

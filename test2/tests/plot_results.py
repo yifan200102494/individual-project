@@ -11,12 +11,12 @@ plt.rcParams['axes.unicode_minus'] = False
 def generate_final_report_charts():
     # --- 1. 严格按照报告正文中的统计数据进行初始化 [cite: 7, 168-179, 182] ---
     data = {
-        "Level": ["Slow(0.001)", "Medium(0.003)", "Fast(0.005)", "Extreme(0.007)", "Insane(0.017)"],
-        "Success_Rate": [90.0, 96.7, 90.0, 83.3, 80.0], # 对应 [cite: 168-169]
-        "Min_Dist": [0.148, 0.155, 0.158, 0.150, 0.148], # 对应 [cite: 178, 182]
-        "Dist_Sigma": [0.004, 0.003, 0.002, 0.005, 0.008], # 亚厘米级标准差
-        "Collisions": [6.23, 2.20, 2.60, 6.90, 9.73]    # 对应 [cite: 179]
-    }
+    "Level": ["Slow (0.001)", "Medium (0.003)", "Fast (0.005)", "Extreme (0.007)", "Insane (0.017)"],
+    "Success_Rate": [100.0, 96.7, 93.3, 86.7, 86.7],
+    "Min_Dist": [0.1730, 0.1734, 0.1723, 0.1764, 0.1549],
+    "Dist_Sigma": [0.018379, 0.029254, 0.038585, 0.037070, 0.030929],
+    "Collisions": [0.00, 1.13, 1.00, 2.37, 2.17]
+}
     df = pd.DataFrame(data)
 
     # --- 图表一：性能分布与物理交互分析 (对应报告 Figure 5.1) ---
@@ -40,10 +40,10 @@ def generate_final_report_charts():
     ax1_twin.set_ylabel('Avg Collision Frames', fontsize=12, fontweight='bold', color='#e67e22')
     ax1_twin.set_ylim(0, 15)
 
-    plt.title('Figure 5.1: Inverted U-Shaped Success Rate Distribution\n& Collision Frame Analysis', 
-              fontsize=14, fontweight='bold', pad=20)
+    plt.title('Figure 6.2.1: Success Rate Distribution Across Speed Levels\nand Collision Analysis',
+          fontsize=14, fontweight='bold', pad=20)
     fig1.tight_layout()
-    fig1.savefig('figure_5_1_performance_fixed.png', dpi=300)
+    fig1.savefig('figure_6_2_1_performance_fixed.png', dpi=300)
 
     # --- 图表二：安全包络统计稳定性分析 (对应报告 Figure 5.2) ---
     fig2, ax2 = plt.subplots(figsize=(10, 6))
@@ -53,21 +53,22 @@ def generate_final_report_charts():
                  color='#34495e', ecolor='#e74c3c', elinewidth=2, capsize=6, 
                  markersize=8, linewidth=2, label='Mean Min Distance ± σ')
     
-    ax2.set_title('Figure 5.2: Statistical Stability Analysis of Safety Envelope\n(Sub-centimeter Variance Verification)', 
-                  fontsize=14, fontweight='bold', pad=20)
+    ax2.set_title('Figure 6.2.2: Statistical Stability Analysis of the Safety Envelope\nAcross Speed Levels',
+              fontsize=14, fontweight='bold', pad=20)
     ax2.set_xlabel('Interference Speed Category', fontsize=12)
     ax2.set_ylabel('Minimum Safe Distance (meters)', fontsize=12)
     
     # 精细调整 Y 轴，展示 0.148m - 0.158m 的一致性 [cite: 8]
-    ax2.set_ylim(0.13, 0.17)
+    ax2.set_ylim(0.1, 0.22)
     ax2.grid(True, linestyle='--', alpha=0.5)
 
     for i, val in enumerate(df["Min_Dist"]):
-        ax2.annotate(f"{val}m", (df["Level"][i], df["Min_Dist"][i]), 
-                     xytext=(0, 12), textcoords='offset points', ha='center', fontsize=10)
+        ax2.annotate(f"{val:.4f} m", (df["Level"][i], df["Min_Dist"][i]),
+                 xytext=(0, 12), textcoords='offset points',
+                 ha='center', fontsize=10)
 
     fig2.tight_layout()
-    fig2.savefig('figure_5_2_stability_fixed.png', dpi=300)
+    fig2.savefig('figure_6_2_2_stability_fixed.png', dpi=300)
     
     print("✅ 图表已更新！请查看 figure_5_1_performance_fixed.png 和 figure_5_2_stability_fixed.png")
 
