@@ -1,0 +1,7 @@
+speed,trials,successes,rate_pct
+1-Slow,30,28,93.3
+2-Medium,30,28,93.3
+3-Fast,30,26,86.7
+4-Extreme,30,25,83.3
+5-Insane,30,21,70.0
+mean,150,128,85.3
